@@ -45,8 +45,8 @@
 
 不需要打分模板 —— 直接把诉求和当前产物给 VLM，让它说人话给你建议。
 
-## 影视工具能力索引（详细见 `memory/film_capabilities.md`）
-不熟悉某工具/想知道典型组合时，**`file_read memory/film_capabilities.md`** 自取。
+## 影视工具能力索引（详细见 `skills/film_capabilities.md`）
+不熟悉某工具/想知道典型组合时，**`file_read skills/film_capabilities.md`** 自取。
 
 | 类别 | 工具 |
 |---|---|

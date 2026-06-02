@@ -1,6 +1,6 @@
 """
 autonomous_task.py - 自主行动任务管理API
-放置: memory/autonomous_operation_sop/
+放置: skills/autonomous_operation_sop/
 用法: import autonomous_task (或 from autonomous_operation_sop import autonomous_task)
 
 4个函数:
@@ -17,9 +17,9 @@ from pathlib import Path
 from datetime import datetime
 
 # ── 路径计算（基于模块自身位置） ──
-_MODULE_DIR = Path(__file__).resolve().parent          # memory/autonomous_operation_sop/
-_MEMORY_DIR = _MODULE_DIR.parent                       # memory/
-_AGENT_DIR = _MEMORY_DIR.parent                        # GenericAgent/
+_MODULE_DIR = Path(__file__).resolve().parent          # skills/autonomous_operation_sop/
+_SKILLS_DIR = _MODULE_DIR.parent                       # skills/
+_AGENT_DIR = _SKILLS_DIR.parent                        # GenericAgent/
 _TEMP_DIR = _AGENT_DIR / "temp"                        # GenericAgent/temp/
 _REPORTS_DIR = _TEMP_DIR / "autonomous_reports"
 _HISTORY_FILE = _REPORTS_DIR / "history.txt"

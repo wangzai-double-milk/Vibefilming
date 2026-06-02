@@ -40,6 +40,61 @@ if not os.path.exists(cdp_cfg):
         open(cdp_cfg, 'w', encoding='utf-8').write(f"const TID = '__ljq_{hex(random.randint(0, 99999999))[2:8]}';")
     except Exception as e: print(f'[WARN] CDP config init failed: {e} — advanced web features (tmwebdriver) will be unavailable.')
 
+def build_skills_index():
+    """扫 skills/*/description.md，自动生成 skill 路由表。
+    每个 film skill 是一个文件夹 skills/<name>/，里面放：
+      - description.md：一两句话说明「这个 skill 管什么、什么时候读」（进开机索引）
+      - <name>.md：详细做法正文（agent 按需 file_read）
+    建一个带 description.md 的文件夹即被自动收录，无需改 sys_prompt。
+    没有 description.md 的目录/文件自动跳过（纯 SOP 文档、脚本、skill_search 等）。"""
+    import glob
+    skills_dir = os.path.join(script_dir, 'skills')
+    rows = []
+    for desc_fp in sorted(glob.glob(os.path.join(skills_dir, '*', 'description.md'))):
+        name = os.path.basename(os.path.dirname(desc_fp))
+        try:
+            with open(desc_fp, 'r', encoding='utf-8') as f:
+                desc = f.read().strip()
+        except Exception:
+            continue
+        if not desc:
+            continue
+        # 取首行做「什么时候读」的触发说明，正文路径默认指向同名 .md
+        trigger = desc.splitlines()[0].strip()
+        body = f"skills/{name}/{name}.md"
+        rows.append(f"| {trigger} | `{body}` |")
+    if not rows:
+        return ''
+    header = "| 你正在做 | 必读 skill |\n|---|---|\n"
+    return header + "\n".join(rows)
+
+
+def build_tools_index():
+    """从已加载的 TOOLS_SCHEMA 自动生成 film 工具速查表。
+    工具的真相源是 tools.py 的 TOOL_REGISTRY + tools_schema_film.json，
+    这里只抽 [Film] 开头的工具名 + description 第一句，sys_prompt 不再手抄。
+    加新工具只要在 tools.py 注册 + schema 写条目，速查表启动自动更新。"""
+    film_tools, ga_tools = [], []
+    for t in TOOLS_SCHEMA:
+        fn = t.get('function', {})
+        name = fn.get('name', '')
+        desc = fn.get('description', '')
+        if not name:
+            continue
+        if desc.startswith('[Film]'):
+            # 取 description 第一句（到第一个 。/句号 或 30 字）做精简说明
+            brief = desc[len('[Film]'):].strip()
+            brief = re.split(r'[。\.\n]', brief)[0].strip()[:40]
+            film_tools.append(f"- `{name}` — {brief}")
+        else:
+            ga_tools.append(f"`{name}`")
+    out = "**影视专属工具**（真相源 → `film/tools.py` + 事实参考卡 `skills/film_facts.md`）：\n"
+    out += "\n".join(film_tools)
+    if ga_tools:
+        out += "\n\n**GA 通用工具**：" + " / ".join(ga_tools)
+    return out
+
+
 def get_system_prompt():
     # 影视模式用专属 prompt
     if GA_MODE == 'film':
@@ -47,6 +102,12 @@ def get_system_prompt():
     else:
         prompt_path = os.path.join(script_dir, f'assets/sys_prompt{lang_suffix}.txt')
     with open(prompt_path, 'r', encoding='utf-8') as f: prompt = f.read()
+    # 自动聚合 skills/ frontmatter 生成路由表，替换占位符
+    if '{{SKILLS_INDEX}}' in prompt:
+        prompt = prompt.replace('{{SKILLS_INDEX}}', build_skills_index())
+    # 自动从 schema 生成工具速查表，替换占位符
+    if '{{TOOLS_INDEX}}' in prompt:
+        prompt = prompt.replace('{{TOOLS_INDEX}}', build_tools_index())
     prompt += f"\nToday: {time.strftime('%Y-%m-%d %a')}\n"
     prompt += get_global_memory()
     return prompt

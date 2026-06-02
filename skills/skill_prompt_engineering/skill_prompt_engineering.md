@@ -1,7 +1,7 @@
 # Skill · Prompt Engineering（调用前最后 30 秒 checklist）
 
 > **何时读我**：**每次** `gen_image` / `gen_video_t2v` / `entity_add_view` 调用之前——**调用前最后一道关**。
-> 这一道是"prompt 文本检查"，不是"分镜结构想清楚"——后者去 [skill_storyboard.md](./skill_storyboard.md)。
+> 这一道是"prompt 文本检查"，不是"分镜结构想清楚"——后者去 [skill_storyboard.md](../skill_storyboard/skill_storyboard.md)。
 > **来源**：火山官方《Seedance 2.0 R2V FAQ V1.7》第一/二/三/四章 + 本项目踩坑（篮球项目 BGM 漏出 / 环保广告 entity 跳过 case）。
 
 ---
@@ -36,6 +36,12 @@
 ```
 
 任意一条不过 → **不许调 Seedance/Seedream**，先改 prompt。
+
+> ⭐ **痕迹可查铁律** ⭐
+> 每个 project 在第一次出 prompt（`gen_video_t2v` / `gen_image` / `entity_add_view` / `gen_audio_bgm`）之前，**必须**有一条 `file_read("skills/skill_prompt_engineering/skill_prompt_engineering.md")` 落到 `logs/tool_calls.jsonl` 里。如果 tool_calls.jsonl 一条 `file_read` 都没有就直接出片 —— 等于"心里走过 7 步"自欺欺人，**视为违规**。
+> - 已踩坑①：p20260601_133747_ 跳舞项目 整个工具调用日志没有一条 file_read，PE 7 步形同虚设。
+> - 已踩坑②：p20260601_172203_ 跳舞 20s 项目 同样 0 条 file_read，s01 prompt 只有"20岁亚裔女孩在舞蹈室跳活力爵士舞，手臂随节奏摆动"一句，没写"画面唯一主角，禁止镜中倒影出现复刻分身"这种第 7 步反例避坑句，结果生成多人物镜头。
+> - ⭐ **第 7 步「反例扫描」必须把命中的死罪反例原文复制到 prompt 末尾**，不是"心里默念过了"。任何有人物的镜头，prompt 末尾必带"画面中唯一主角，禁止出现第二个人形/路人/镜中复刻分身"这类显式禁令句。
 
 ---
 
@@ -276,7 +282,7 @@ Seedance 靠括号识别音频意图——**不写括号 = 模型自己猜，靠
 │   └── 短 prompt 直接发
 │
 ├── 是 MV 模式（A-4）
-│   └── 走 [skill_audio.md](./skill_audio.md) A-4 章节，跳过 BGM 禁令
+│   └── 走 [skill_audio.md](../skill_audio/skill_audio.md) A-4 章节，跳过 BGM 禁令
 │
 └── 其他所有视频生成
     └── 7 步 checklist：

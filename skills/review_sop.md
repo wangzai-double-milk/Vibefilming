@@ -29,8 +29,8 @@
 ```
 任意前端 (TUI / Streamlit / wechat / desktop)
    └─ frontends/review_cmd.py     ← 命令分发,剥 "/review" 前缀,注入 user_request
-       └─ memory/review_sop/review_inline_prompt.txt   ← 完整 in-session 协议
-           └─ memory/code_review_principles.md         ← 15 条好代码原则
+       └─ skills/review_sop/review_inline_prompt.txt   ← 完整 in-session 协议
+           └─ skills/code_review_principles.md         ← 15 条好代码原则
 ```
 
 - `review_cmd.py:install()` —— monkey-patch `GenericAgent._handle_slash_cmd`,统一接管 `/review`
@@ -55,7 +55,7 @@
 
 ### 步骤 1:必读底料
 
-`file_read("memory/code_review_principles.md")` —— 15 条好代码原则,**每条 finding 必须
+`file_read("skills/code_review_principles.md")` —— 15 条好代码原则,**每条 finding 必须
 能映射到其中一条**。
 
 ### 步骤 2:锁定审阅范围
@@ -110,7 +110,7 @@
 7. **Author would likely fix if made aware** — 作者会同意修?
 8. **Impact meaningful + proportionate rigor** — 影响足够 + 严谨度匹配代码库?
 
-> 每条规则的展开详见 `memory/review_sop/review_inline_prompt.txt` §5。
+> 每条规则的展开详见 `skills/review_sop/review_inline_prompt.txt` §5。
 
 ---
 
@@ -125,7 +125,7 @@
 7. **即读即懂** — 核心结论放第一句。
 8. **零奉承** — 不写 "Great work, but...", "Thanks for the changes, however..."。
 
-> 展开详见 `memory/review_sop/review_inline_prompt.txt` §6。
+> 展开详见 `skills/review_sop/review_inline_prompt.txt` §6。
 
 ---
 
@@ -165,5 +165,5 @@ PASS / CONDITIONAL / FAIL
 
 ## 十、扩展点
 
-- **自定义评审条目**:编辑 `memory/code_review_principles.md`,reviewer 启动时整段注入
+- **自定义评审条目**:编辑 `skills/code_review_principles.md`,reviewer 启动时整段注入
 - **触发更换**:要把 `/review` 改成别的命令,只动 `frontends/review_cmd.py` 的 `install()` 一处

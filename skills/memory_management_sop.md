@@ -19,7 +19,8 @@ L1: global_mem_insight.txt (极简索引层 - 严格控制 ≤30 行)
     ↓ 导航指向 (Pointer)  
 L2: global_mem.txt (事实库层 - 现短但会膨胀)  
     ↓ 详细引用 (Reference)  
-L3: ../memory/ (记录库层 - 包含 .md/.py 等各类文件)  
+L3-write: ../memory/ (新沉淀的任务级 SOP/脚本写入这里 - 包含 .md/.py)  
+L3-read:  ../skills/ (已成熟的 SOP/skill 知识库，只读，agent 用 file_read 调用参考)  
 L4: ../memory/L4_raw_sessions/ (历史会话层 - scheduler反射自动收集，可定位过往上下文)  
 ```
 ---

@@ -1,5 +1,6 @@
 import sys, os, json, re, time, subprocess
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'memory'))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'skills'))
 _r = subprocess.run
 def _d(b):
     if not b: return ''

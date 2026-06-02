@@ -5,7 +5,7 @@
 ## 最简调用
 
 ```python
-import sys; sys.path.append('../memory/skill_search')
+import sys; sys.path.append('../skills/skill_search')
 from skill_search import search
 
 results = search("python send email")  # ⚠️ 必须用英文查询，中文匹配效果极差

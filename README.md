@@ -25,8 +25,11 @@
 | "宠物跳舞 15 秒，竖屏" | 分镜（3 镜）→ 萌宠 turnaround 基准图 → 3 段动态 → 9:16 竖屏拼接 → 欢快电子 BGM |
 | "武侠片 60s，刀光剑影" | 分镜（5 镜）→ 主角三视图 + 兵器立绘 → 5 段链式承接 → 概念片节奏 BGM |
 | "30s 海边温情" | 自动判断不需要对白 → 海浪原生音 + 钢琴铺底 BGM |
+| **"30s 咖啡广告，并行出片"** | **九宫格关键帧法**：一次性出 N 张关键帧 → 多段视频并行提交 → 全过审拼片 |
 
 **全程不需要你介入**——它会自己想分镜、自己写 prompt、自己审片不过审就重做、自己判断需不需要 BGM 配什么风格的 BGM。
+
+> 📖 **第一次用？先看 [DIRECTOR_GUIDE.md](./DIRECTOR_GUIDE.md)**——给导演看的人话手册：每个工具干嘛用、想改它的拍法去改哪个文件、0 代码加新技能。
 
 **你只在两种情况下被打扰**：①brief 实在没说清 ②预算烧到一半还没出片需要确认。
 
@@ -34,7 +37,7 @@
 
 ## 🔥 凭什么它能"自主"？
 
-我们没用任何工作流编排框架。整套系统就一个 **~100 行的 agent 主循环 + 30 个原子工具 + 一堆经验文档**。
+我们没用任何工作流编排框架。整套系统就一个 **GA 主循环 + 36 个原子工具 + 一堆经验文档**。
 让 agent 自己变聪明的核心是这三件事：
 
 ### 1. 「导演式自审」 —— 每个产物 VLM 当导演审一眼
@@ -128,12 +131,16 @@ python3 agentmain.py
 ```
 你的 brief
     ↓
-[阶段 1] storyboard_set 设计分镜（agent 自己拍板）
+[阶段 1] 规划镜头（agent 自己拍板）
+         └─ 两种路线二选一：
+            · 结构化分镜（storyboard_set）→ 链式承接，连贯性强
+            · 九宫格关键帧（skill_storyboard_grid）→ 关键帧并行，速度快
     ↓
 [阶段 2] entity-first 出角色/道具/场景基准图
          └─ 每个 entity 必过 vlm_understand（导演审片）
     ↓
 [阶段 3] 每个 shot：PE 7 步 → gen_video_t2v → query_video_task
+         └─ 链式路线串行承接 / 九宫格路线并行提交
          └─ 每段必过 vlm_understand（不过审就重做，最多 2 轮）
     ↓
 [阶段 4] 所有 shot 全过审 → video_concat → final_no_bgm.mp4
@@ -163,19 +170,21 @@ projects/<project_id>/
 
 ---
 
-## 🛠️ 工具清单（30+ 原子工具）
+## 🛠️ 工具清单（36 个原子工具）
 
 | 类别 | 工具 |
 |---|---|
-| 🗂️ 工作区 | `project_create` / `project_status` / `project_open` / `storyboard_set` |
-| 🎭 角色档案 | `entity_register` / `entity_add_view` |
-| 🎨 视觉生成 | `gen_image` / `gen_video_t2v` / `query_video_task` |
-| ✂️ 视频处理 | `video_concat` / `video_crossfade` / `video_trim` / `video_speed` / `video_overlay` / `video_fade` / `video_portrait` |
+| 🗂️ 工作区 | `project_create` / `project_status` / `project_open` / `storyboard_set` / `storyboard_get` |
+| 🎭 角色档案 | `entity_register` / `entity_add_view` / `entity_get` |
+| 🎨 视觉生成 | `gen_image` / `gen_video_t2v` / `query_video_task` / `cancel_video_task` |
+| ✂️ 视频处理 | `video_concat` / `video_crossfade` / `video_trim` / `video_speed` / `video_overlay` / `video_fade` / `video_portrait` / `burn_subtitle` |
 | 🎵 音频 | `gen_audio_bgm` ⭐ / `query_audio_task` ⭐ / `audio_amix` / `tts` |
 | 👁️ 评估 | `vlm_understand`（导演视角审片，三场景模板）/ `extract_frames` |
-| 🔧 工具 | `probe_duration` / `burn_subtitle` / `sleep` |
+| ⏱️ 调度 | `sleep` |
+| 🧰 通用 | `code_run` / `file_read` / `file_write` / `file_patch` / `web_scan` / `web_execute_js` / `update_working_checkpoint` / `ask_user` / `start_long_term_update` |
 
-详细能力见 [memory/film_capabilities.md](./memory/film_capabilities.md)。
+> 🆕 **导演视角的工具说明（人话版）见 [DIRECTOR_GUIDE.md](./DIRECTOR_GUIDE.md)**——每个工具干嘛、什么时候用、想改拍法改哪里。
+> 完整事实参考卡见 [skills/film_facts.md](./skills/film_facts.md)（模型清单 / 目录结构 / 审计日志）。
 
 ---
 
@@ -185,10 +194,12 @@ projects/<project_id>/
 - **VLM ≠ PE 工程师**：VLM 只出"问题诊断+想要的样子"，agent 走 PE 7 步翻译成工程化 prompt
 - **流程不钉死**：没有"必须 P1→P2→P3"的硬流程，agent 根据 review 反馈自己跳回重做 / 跳过 / 换思路
 - **代码层硬保障 + 文档层经验沉淀**：能用代码闸门防的（BGM lint / generate_audio 默认值 / entity 必过审）就不用文档约束；只有方法论沉淀才进 skill md
+- **铁律 = 状态底线，不规定路线**：sys_prompt 只说"必须达到什么状态"（不偷砍 / 主体过审 / 产物过审 / 不脑补），不绑工具名/格式；**怎么实现是 skill 的事**——这样新增/替换实现路线（如九宫格并行）0 改 system 即可生效
+- **加 skill 0 代码生效**：在 `skills/` 下新建一个文件夹 + `description.md`（首行=触发说明），开机自动进 SKILLS_INDEX
 - **小步快跑**：单次只出最小可验证产物，VLM 看一眼再扩张
 - **节约预算**：图编辑优先于重画，能并行就并行（链式承接除外）
 
-完整 sys_prompt 见 [assets/sys_prompt_film.txt](./assets/sys_prompt_film.txt)，所有经验沉淀在 [memory/skill_*.md](./memory/)。
+完整 sys_prompt 见 [assets/sys_prompt_film.txt](./assets/sys_prompt_film.txt)，业务方法论沉淀在 [skills/](./skills/) 下各 `skill_*/` 文件夹（每个文件夹含 `description.md` + 正文），通用 SOP（plan / review / vision 等）以平铺 `.md` 文件并存于同一目录。
 
 ---
 
@@ -230,12 +241,14 @@ A: 编辑 [mykey.py](./mykey.py)，通用模板见 [mykey_template.py](./mykey_t
 
 | 文档 | 内容 |
 |---|---|
-| [memory/skill_prompt_engineering.md](./memory/skill_prompt_engineering.md) | PE 7 步 + 5 大死罪 + 4 类符号实战 |
-| [memory/skill_director_vlm.md](./memory/skill_director_vlm.md) | VLM 当导演的三场景审片模板 |
-| [memory/skill_entity_consistency.md](./memory/skill_entity_consistency.md) | 角色一致性 / 三视图 / 防 ID 漂移 |
-| [memory/skill_video_chain.md](./memory/skill_video_chain.md) | 链式衔接 / 帧裁剪 / 防画质劣化 |
-| [memory/skill_audio.md](./memory/skill_audio.md) | BGM 决策 + BigMusic 接入 + 三道闸门 |
-| [memory/skill_storyboard.md](./memory/skill_storyboard.md) | 分镜设计 / entities_planned 必填 |
+| [DIRECTOR_GUIDE.md](./DIRECTOR_GUIDE.md) | 🆕 **导演手册（人话版）**：36 个工具说明 + 想改拍法去哪改 + 0 代码加新技能 |
+| [skills/skill_prompt_engineering.md](./skills/skill_prompt_engineering/skill_prompt_engineering.md) | PE 7 步 + 5 大死罪 + 4 类符号实战 |
+| [skills/skill_director_vlm.md](./skills/skill_director_vlm/skill_director_vlm.md) | VLM 当导演的三场景审片模板 |
+| [skills/skill_entity_consistency.md](./skills/skill_entity_consistency/skill_entity_consistency.md) | 角色一致性 / 三视图 / 防 ID 漂移 |
+| [skills/skill_video_chain.md](./skills/skill_video_chain/skill_video_chain.md) | 链式衔接 / 帧裁剪 / 防画质劣化 |
+| [skills/skill_storyboard_grid.md](./skills/skill_storyboard_grid/skill_storyboard_grid.md) | 🆕 **九宫格关键帧并行法**（适用多镜头切换片，不适用连续运动） |
+| [skills/skill_audio.md](./skills/skill_audio/skill_audio.md) | BGM 决策 + BigMusic 接入 + 三道闸门 |
+| [skills/skill_storyboard.md](./skills/skill_storyboard/skill_storyboard.md) | 分镜设计 / entities_planned 必填 |
 
 ---
 

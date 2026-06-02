@@ -3,7 +3,7 @@
 用户输入整段作为 user_request 注入 inline prompt;主 agent 在当前 session 内按 prompt
 协议自取审阅范围(用户点名的文件 / git diff)并 echo 报告,不开 subagent、不写落盘文件。
 
-prompt 与 SOP 仅来自 `memory/review_sop/`,作为独立公共入口,不读取其他工作流的私有 prompt。
+prompt 与 SOP 仅来自 `skills/review_sop/`,作为独立公共入口,不读取其他工作流的私有 prompt。
 """
 from __future__ import annotations
 import os
@@ -16,7 +16,7 @@ _INLINE_PROMPT_EN = 'review_inline_prompt.en.txt'
 _STUB_FALLBACK = (
     '[/review in-session] (⚠️ prompt 文件缺失: {fpath} → {err})\n\n'
     '# 本轮用户请求\n{user_request}\n\n'
-    '请按 memory/code_review_principles.md 评审,直接 echo 报告到对话。\n'
+    '请按 skills/code_review_principles.md 评审,直接 echo 报告到对话。\n'
     '不要写 review.md,不要打 [ROUND END]。'
 )
 
@@ -24,7 +24,7 @@ def _render_prompt(user_request: str) -> str:
     """加载 /review inline prompt 并注入 user_request + ga_root。"""
     lang = os.environ.get('GA_LANG', '').strip().lower()
     fname = _INLINE_PROMPT_EN if lang == 'en' else _INLINE_PROMPT_ZH
-    fpath = os.path.join(CODE_ROOT, 'memory', _PROMPT_DIR, fname)
+    fpath = os.path.join(CODE_ROOT, 'skills', _PROMPT_DIR, fname)
     ga_root = CODE_ROOT.replace('\\', '/')
     try:
         with open(fpath, 'r', encoding='utf-8') as f:
@@ -42,7 +42,7 @@ def _help_text() -> str:
         '  `/review 我刚改了 review_cmd.py 和 tuiapp_v2.py,关注 prompt 注入`\n'
         '  `/review 审 frontends 目录下所有改过的文件`\n\n'
         '产出:直接对话 markdown(不写文件、不开 subagent)。\n'
-        '协议: `memory/review_sop/review_inline_prompt.txt` + `memory/code_review_principles.md`'
+        '协议: `skills/review_sop/review_inline_prompt.txt` + `skills/code_review_principles.md`'
     )
 
 _DEFAULT_REQUEST_ZH = '(无具体请求 — 默认审本次 uncommitted 改动:用 code_run 跑 `git diff --stat HEAD` 与 `git diff HEAD`)'

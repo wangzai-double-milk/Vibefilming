@@ -37,9 +37,11 @@
 
 **正确流程顺序**：
 
+> ⭐ **命名白名单铁律**：`video_concat` 输出的成片 `name=` **必须**叫 `final_no_bgm`（不带 BGM 的干净底片），`audio_amix` 输出 `name=` **必须**以 `_with_bgm` 结尾。**禁止**取 `final_30s_dance` / `final_v1` / `final` 等任何不含 `_no_bgm` / `_with_bgm` 后缀的含糊名——含糊名 = agent 自己也忘了 BGM 还没配 = 跳过整个阶段 5 直接交付。**已踩坑：p20260601_133747_ 跳舞项目** agent 用 `final_30s_dance` 命名 → 直接 vlm 审无 BGM 成片 → start_long_term_update 交付，BGM 流水线一行没调。
+
 ```
 1. 所有 shots 全部生成 + vlm 全过审
-2. video_concat 拼成 final_no_bgm.mp4
+2. video_concat 拼成 final_no_bgm.mp4   ← 名字必须是这个白名单
 3. agent 自己判断：本片需不需要 BGM？需要什么风格的 BGM？
 4. gen_audio_bgm(prompt=<≥50字风格描述>, base_video="composed/final_no_bgm.mp4",
                  name="bgm_main")
@@ -62,7 +64,7 @@
 
 ### 兜底：BGM amix 后审什么 ⭐
 
-review_final_with_bgm 的 question 必须覆盖以下 4 项（参考 [skill_director_vlm.md](skill_director_vlm.md) 三段式模板）：
+review_final_with_bgm 的 question 必须覆盖以下 4 项（参考 [skill_director_vlm.md](../skill_director_vlm/skill_director_vlm.md) 三段式模板）：
 
 | 审什么 | 不过审示例 | 修正方向（写到 prompt v2） |
 |---|---|---|

@@ -29,7 +29,7 @@
 > 1. 上一段不出 mp4 不能提交下一段
 > 2. **上一段不过 vlm 检查不许提交下一段**，否则崩坏会累积传染
 
-详细链式打法见 [skill_video_chain.md](./skill_video_chain.md)。
+详细链式打法见 [skill_video_chain.md](../skill_video_chain/skill_video_chain.md)。
 
 ---
 

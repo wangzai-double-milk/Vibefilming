@@ -95,7 +95,7 @@
 
   {"type": "function", "function": {
     "name": "storyboard_set",
-    "description": "[Film] 覆盖式写入分镜剧本到 projects/<pid>/storyboard.json。详细方法论（必填字段、self_review 5 条、跳过的代价）见 memory/skill_storyboard.md",
+    "description": "[Film] 覆盖式写入分镜剧本到 projects/<pid>/storyboard.json。详细方法论（必填字段、self_review 5 条、跳过的代价）见 skills/skill_storyboard/skill_storyboard.md",
     "parameters": {"type": "object", "properties": {
       "title": {"type": "string", "description": "片名/工作标题"},
       "duration_total": {"type": "number", "description": "总时长（秒）"},
@@ -131,7 +131,7 @@
 
   {"type": "function", "function": {
     "name": "entity_register",
-    "description": "[Film] 登记一个 entity（角色/道具/场景）档案，不出图。详细方法论（一致性两层保障、视角规划）见 memory/skill_entity_consistency.md",
+    "description": "[Film] 登记一个 entity（角色/道具/场景）档案，不出图。详细方法论（一致性两层保障、视角规划）见 skills/skill_entity_consistency/skill_entity_consistency.md",
     "parameters": {"type": "object", "properties": {
       "name": {"type": "string", "description": "entity 标识名，英文+下划线"},
       "type": {"type": "string", "enum": ["character", "prop", "scene", "other"]},
@@ -142,7 +142,7 @@
   },
   {"type": "function", "function": {
     "name": "entity_add_view",
-    "description": "[Film] 给已登记的 entity 出一张视角/状态图。第一次调用 = 出基准图（无 ref）；后续自动用 canonical_view 当 ref_image_url。落到 entities/<name>/<view>.png 并登记到 ref.json。详细见 memory/skill_entity_consistency.md",
+    "description": "[Film] 给已登记的 entity 出一张视角/状态图。第一次调用 = 出基准图（无 ref）；后续自动用 canonical_view 当 ref_image_url。落到 entities/<name>/<view>.png 并登记到 ref.json。详细见 skills/skill_entity_consistency/skill_entity_consistency.md",
     "parameters": {"type": "object", "properties": {
       "entity_name": {"type": "string", "description": "已登记的 entity 名"},
       "view": {"type": "string", "description": "本视角/状态名（character 三视图固定用 front/side/back）"},
@@ -170,7 +170,7 @@
   },
   {"type": "function", "function": {
     "name": "gen_video_t2v",
-    "description": "[Film] Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_entities / reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：storyboard.entities_planned 全部 entity（含 prop / scene）必须已 register + add_view + 基准图 vlm 过审；reference_entities 必须列全本 shot 的 characters + props + scene。**链式衔接、配乐策略、开拍门槛清单详见 memory/skill_video_chain.md / memory/skill_entity_consistency.md**",
+    "description": "[Film] Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_entities / reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：storyboard.entities_planned 全部 entity（含 prop / scene）必须已 register + add_view + 基准图 vlm 过审；reference_entities 必须列全本 shot 的 characters + props + scene。**链式衔接、配乐策略、开拍门槛清单详见 skills/skill_video_chain/skill_video_chain.md / skills/skill_entity_consistency/skill_entity_consistency.md**",
     "parameters": {"type": "object", "properties": {
       "prompt": {"type": "string", "description": "视频描述。链式段必须显式承接上段（'承接上段视频，...'）。需要锁首/尾帧画面用文字暗示：'opening frame: ...; ending frame: ...'"},
       "name": {"type": "string", "description": "产物文件名（不含扩展名）"},
@@ -185,7 +185,7 @@
   },
   {"type": "function", "function": {
     "name": "query_video_task",
-    "description": "[Film] 查询 Seedance 任务状态。默认阻塞等到 succeeded/failed，**自动按 duration 估 ETA + 动态轮询间隔 + 打印进度条**。建议传 duration（视频时长秒数），ETA 会算成 60 + 15 * duration（10s 视频约 210s，15s 视频约 285s）。succeeded 时返回 {path?, video_url}（path: save_name 给了的话；video_url: 云端 url 可直接当下一段 reference_video_url）。同时把 url 写到 <save_name>.url.txt sidecar 方便本地 path 反查。串行 vs 并行调度策略见 memory/skill_async_schedule.md",
+    "description": "[Film] 查询 Seedance 任务状态。默认阻塞等到 succeeded/failed，**自动按 duration 估 ETA + 动态轮询间隔 + 打印进度条**。建议传 duration（视频时长秒数），ETA 会算成 60 + 15 * duration（10s 视频约 210s，15s 视频约 285s）。succeeded 时返回 {path?, video_url}（path: save_name 给了的话；video_url: 云端 url 可直接当下一段 reference_video_url）。同时把 url 写到 <save_name>.url.txt sidecar 方便本地 path 反查。串行 vs 并行调度策略见 skills/skill_async_schedule/skill_async_schedule.md",
     "parameters": {"type": "object", "properties": {
       "task_id": {"type": "string", "description": "gen_video_t2v 返回的 task_id"},
       "save_name": {"type": "string", "description": "[可选] succeeded 时落盘的文件名（不含扩展名）"},
@@ -301,13 +301,24 @@
       "required": ["text", "name"]}}
   },
   {"type": "function", "function": {
-    "name": "gen_bgm",
-    "description": "[Film] 豆包·音乐 GenBGM 生成纯音乐。当前需 VOLC_AK/SK，无 key 会报错",
+    "name": "gen_audio_bgm",
+    "description": "[Film] 豆包·音乐 GenBGM 生成纯音乐（异步，返回 task_id，需 query_audio_task 轮询）。当前需 VOLC_AK/SK，无 key 会报错。配乐流程详见 skills/skill_audio/skill_audio.md",
     "parameters": {"type": "object", "properties": {
       "prompt": {"type": "string", "description": "音乐风格描述"},
       "name": {"type": "string"},
       "duration": {"type": "integer", "default": 30}},
       "required": ["prompt", "name"]}}
+  },
+
+  {"type": "function", "function": {
+    "name": "query_audio_task",
+    "description": "[Film] 查询 BGM（gen_audio_bgm）任务状态，跟 query_video_task 对称。默认阻塞轮询到 succeeded/failed。succeeded 时返回 {path?, audio_url}（path: save_name 给了的话落到 audios/<save_name>.mp3）。⚠️ 查 BGM 任务必须用本工具，不要用 query_video_task（那是查 Seedance 视频的，task_id 不通用）。配乐流程详见 skills/skill_audio/skill_audio.md",
+    "parameters": {"type": "object", "properties": {
+      "task_id": {"type": "string", "description": "gen_audio_bgm 返回的 task_id"},
+      "save_name": {"type": "string", "description": "[可选] succeeded 时落盘的文件名（不含扩展名），落到 audios/<save_name>.mp3"},
+      "wait": {"type": "boolean", "description": "是否阻塞等待", "default": true},
+      "max_wait": {"type": "integer", "description": "最长等待秒数，默认 180（BGM 比视频快）"}},
+      "required": ["task_id"]}}
   },
 
   {"type": "function", "function": {
@@ -321,7 +332,7 @@
   },
   {"type": "function", "function": {
     "name": "vlm_understand",
-    "description": "[Film] 开放式视觉理解：自己写 question，Doubao Seed 2.0 pro 回答。视频走原生理解（不抽帧），图片走多图理解。结果落到 reviews/<name>.json。**审片场景的提问规范、决策树、提问模板详见 memory/skill_director_vlm.md，调用前必读**",
+    "description": "[Film] 开放式视觉理解：自己写 question，Doubao Seed 2.0 pro 回答。视频走原生理解（不抽帧），图片走多图理解。结果落到 reviews/<name>.json。**审片场景的提问规范、决策树、提问模板详见 skills/skill_director_vlm/skill_director_vlm.md，调用前必读**",
     "parameters": {"type": "object", "properties": {
       "clip": {"type": "string", "description": "视频或图片路径"},
       "question": {"type": "string", "description": "你想让 VLM 回答的问题，越具体越好；审片场景按 skill_director_vlm.md 模板写"},

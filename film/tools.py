@@ -349,7 +349,7 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
 # ===== BGM prompt linter（gen_video_t2v 调用前硬校验）=====
 # Seedance 看 prompt 时靠 4 类括号识别音频意图：（）BGM / <>音效 / {}台词 / 【】字幕
 # 本项目策略：BGM 走后期 gen_audio_bgm + audio_amix，禁止 Seedance 自己出 BGM。
-# 详见 memory/skill_audio.md "4 类特殊字符规范"
+# 详见 skills/skill_audio/skill_audio.md "4 类特殊字符规范"
 import re as _re
 
 _BGM_KEYWORDS = [
@@ -380,7 +380,7 @@ def _lint_no_inline_bgm(prompt: str) -> str:
                     f"本项目 BGM 走后期 gen_audio_bgm + audio_amix，Seedance 不出 BGM。\n"
                     f"修法：① 删掉这段括号；② 想要的环境音改写成 <>音效（如 <远处沉闷鼓点声>）；\n"
                     f"③ prompt 末尾追加「无背景音乐，仅保留环境音效与人物对白」。\n"
-                    f"详见 memory/skill_audio.md 的「4 类特殊字符规范」与「BGM prompt 编写要素」。"
+                    f"详见 skills/skill_audio/skill_audio.md 的「4 类特殊字符规范」与「BGM prompt 编写要素」。"
                 )
 
     # 检查 2：顶格 "BGM: xxx" / "配乐：xxx" 声明
@@ -408,7 +408,7 @@ def _gen_video_t2v(handler, args):
     # 闸门 1（代码层 lint）：禁止 prompt 写"（…BGM/音乐/配乐…）"括号描述
     #   原因：本项目 BGM 走后期 gen_audio_bgm + audio_amix，Seedance 出对白/音效就好。
     #   prompt 里写括号 BGM 描述 → 模型会自己脑补 BGM 撕裂 → 拼接后段间断裂
-    #   详见 memory/skill_audio.md "4 类特殊字符规范"
+    #   详见 skills/skill_audio/skill_audio.md "4 类特殊字符规范"
     prompt = _lint_no_inline_bgm(prompt)
     # 闸门 2（兜底）：generate_audio=True 时若 prompt 没"无背景音乐"句，自动追加
     generate_audio = bool(args.get("generate_audio", False))
@@ -855,7 +855,7 @@ def _vlm_understand(handler, args):
       - 让 VLM 定位异常时间区间（"第几秒剑消失了"）
       - 让 VLM 对比两版（一次传两个 clip 用图片模式）
 
-    审片场景的提问规范、决策树、提问模板详见 memory/skill_director_vlm.md，
+    审片场景的提问规范、决策树、提问模板详见 skills/skill_director_vlm/skill_director_vlm.md，
     agent 调用前先读 md 自己拼好 question。
     """
     pid = _active_pid(handler)
@@ -944,6 +944,7 @@ TOOL_REGISTRY = {
     "audio_amix":       _audio_amix,
     "tts":              _tts,
     "gen_audio_bgm":    _gen_audio_bgm,
+    "gen_bgm":          _gen_audio_bgm,  # 别名兜底：agent 调旧名也能 work，避免脑补"未配置密钥"
     "query_audio_task": _query_audio_task,
     # 评估归档
     "extract_frames": _extract_frames,

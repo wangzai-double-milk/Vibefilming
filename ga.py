@@ -152,7 +152,7 @@ def format_error(e):
     return f"{exc_type.__name__}: {str(e)}"
 
 def log_memory_access(path):
-    if 'memory' not in path: return
+    if 'memory' not in path and 'skills' not in path: return
     stats_file = os.path.join(script_dir, 'memory/file_access_stats.json')
     try:
         with open(stats_file, 'r', encoding='utf-8') as f: stats = json.load(f)
@@ -418,7 +418,7 @@ class GenericAgentHandler(BaseHandler):
         result = smart_format(result, max_str_len=maxlen, omit_str='\n\n[omitted long content]\n\n')
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         log_memory_access(path)
-        if 'memory' in path or 'sop' in path: 
+        if 'memory' in path or 'skills' in path or 'sop' in path: 
             next_prompt += "\n[SYSTEM TIPS] 正在读取记忆或SOP文件，若决定按sop执行请提取sop中的关键点（特别是靠后的）update working memory."
         return StepOutcome(result, next_prompt=next_prompt)
     
@@ -511,7 +511,7 @@ class GenericAgentHandler(BaseHandler):
 **操作**：严格遵循提供的L0的记忆更新SOP。先 `file_read` 看现有 → 判断类型 → 最小化更新 → 无新内容跳过，保证对记忆库最小局部修改。\n
 ''' + get_global_memory()
         yield "[Info] Start distilling good memory for long-term storage.\n"
-        path = './memory/memory_management_sop.md'
+        path = './skills/memory_management_sop.md'
         if os.path.exists(path): result = 'This is L0:\n' + file_read(path, show_linenos=False)
         else: result = "Memory Management SOP not found. Do not update memory."
         return StepOutcome(result, next_prompt=prompt)

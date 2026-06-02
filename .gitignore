@@ -46,92 +46,12 @@ dalao.txt
 *.exe
 
 memory/*
-!memory/memory_management_sop.md
-
-# VibeFilming skill 文档（核心经验沉淀，必推）
-!memory/skill_prompt_engineering.md
-!memory/skill_director_vlm.md
-!memory/skill_entity_consistency.md
-!memory/skill_video_chain.md
-!memory/skill_audio.md
-!memory/skill_storyboard.md
-!memory/skill_self_decision.md
-!memory/skill_async_schedule.md
-!memory/film_capabilities.md
-!memory/vibefilming_shortvideo_sop.md
-
-# Allow tracking of specific SOPs
-!memory/web_setup_sop.md
-!memory/autonomous_operation_sop.md
-!memory/autonomous_operation_sop/
-!memory/autonomous_operation_sop/**
-!memory/scheduled_task_sop.md
-
-# L4 session archiver (only the script, not archives)
 !memory/L4_raw_sessions/
 memory/L4_raw_sessions/*
 !memory/L4_raw_sessions/compress_session.py
+# 注：所有原 memory/ 下的 SOP 与 skill 知识库已迁移到 skills/，整目录默认推送（无需白名单）
+# memory/ 现仅保留运行时记忆产物（global_mem.txt / global_mem_insight.txt 等），默认屏蔽
 
-# ljqCtrl related tools
-!memory/ljqCtrl.py
-!memory/ljqCtrl_sop.md
-
-# procmem_scanner related tools
-!memory/procmem_scanner.py
-!memory/procmem_scanner_sop.md
-
-# TMWebDriver SOP
-!memory/tmwebdriver_sop.md
-
-# Vue3 Component SOP
-!memory/vue3_component_sop.md
-
-# Subagent SOP
-!memory/subagent_sop.md
-
-# Incubator SOP
-!memory/incubator_sop.md
-
-# Supervisor SOP
-!memory/supervisor_sop.md
-
-# Plan SOP
-!memory/plan_sop.md
-
-# Goal Mode SOP
-!memory/goal_mode_sop.md
-
-# Goal Hive Mode SOP
-!memory/goal_hive_sop.md
-
-# Morphling SOP
-!memory/morphling_sop.md
-
-# Skill Search SOP
-!memory/skill_search/
-!memory/skill_search/**
-
-
-# ADB UI tool
-!memory/adb_ui.py
-
-# Keychain
-!memory/keychain.py
-
-# Vision / OCR / UI detection tools
-!memory/ocr_utils.py
-!memory/vision_sop.md
-!memory/ui_detect.py
-!memory/vision_api.template.py
-
-# Memory management
-!memory/memory_cleanup_sop.md
-
-# Code Review Principles
-!memory/code_review_principles.md
-
-# Review Mode SOP
-!memory/review_sop.md
 
 # Visual Studio
 .vs/
