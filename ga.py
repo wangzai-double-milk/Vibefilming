@@ -271,7 +271,15 @@ class GenericAgentHandler(BaseHandler):
 
     def _get_abs_path(self, path):
         if not path: return ""
-        return os.path.abspath(os.path.join(self.cwd, path))   
+        if os.path.isabs(path): return path
+        cand = os.path.abspath(os.path.join(self.cwd, path))
+        # 回退：cwd 是 temp/ 沙箱，但 skills/projects/memory/assets 等共享目录在仓库根。
+        # temp 下找不到时，回退到仓库根解析，兜住所有相对引用（skill 索引、铁律括号引用、skill 互引）。
+        if not os.path.exists(cand):
+            repo_root = os.path.dirname(os.path.abspath(__file__))
+            alt = os.path.abspath(os.path.join(repo_root, path))
+            if os.path.exists(alt): return alt
+        return cand
 
     def _extract_code_block(self, response, code_type):
         code_type = {'python':'python|py', 'powershell':'powershell|ps1|pwsh', 'bash':'bash|sh|shell'}.get(code_type, re.escape(code_type))

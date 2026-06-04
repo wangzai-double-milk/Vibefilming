@@ -1,3 +1,8 @@
+---
+name: skill-storyboard-grid
+description: 要做"分镜关键帧并行法"时读我：把跨镜头一致性前移到图层，让多段视频脱离链式承接、可并行提交。 适用一镜一画面、镜头之间是切换而非连续运动的片子（叙事广告 / MV 卡点 / 产品分镜）；强调一镜到底、连续动作承接的片子（武打 / 长镜头运动）仍走 skill_video_chain。
+---
+
 # Skill · 分镜关键帧并行法（Storyboard Grid / Parallel Keyframes）
 
 > **何时读我**：分镜契约已锁定，且片子属于"一镜一画面、镜头之间是切换而非连续运动"类型（叙事广告 / MV 卡点 / 产品分镜），想**并行出片提速**时。
@@ -31,7 +36,7 @@
 本路线只改"段间怎么承接"，下列状态底线照常生效（见 sys_prompt 机制铁律）：
 
 - **铁律1 分镜契约先行**：关键帧本身就是一种合法的分镜契约形态——但仍要先锁定镜头数/每镜时长/出场主体，列了几段交几段。
-- **铁律2 主体先于成片**：关键帧图里的角色/道具/场景必须来自**已建档并过审的 entity**，不是凭空画。出关键帧时用 entity 的 canonical 图作 `ref_image_url`，保证跨镜头同一张脸。
+- **铁律2 主体先于成片**：关键帧图里的角色/道具/场景必须来自**已用 gen_image 出好并过审的参考图**，不是凭空画。出关键帧时用主体的参考图作 `ref_image_url`，保证跨镜头同一张脸。
 - **铁律3 Prompt 合规** / **铁律4 产物必审** / **铁律5 不过审 hard stop**：关键帧图、每段视频都要过 vlm 审。
 - **铁律6 配乐是后期**：BGM 仍走 `skill_audio` 后期铺底。
 
@@ -41,17 +46,16 @@
 
 ```
 1. 锁定分镜契约（镜头数 / 每镜时长 / 出场主体）            … 铁律1
-2. 建 entity 并出齐视图、逐张过审                          … skill_entity_consistency（铁律2）
+2. 用 gen_image 出齐各主体参考图、逐张过审            … skill_entity_consistency（铁律2）
 3. 出关键帧图（每个镜头一张，或一张九宫格切格）：
-     gen_image(prompt=该镜头画面, ref_image_url=该镜头主体的 entity 图)
+     gen_image(prompt=该镜头画面, ref_image_url=该镜头主体的参考图 url)
    ↳ 关键帧之间风格/角色靠 ref_image_url 锁定 → 这一步决定了最终一致性
    ↳ 逐张 vlm 审：构图对不对、角色一致不一致（不过审重出，别带病进下一步）  … 铁律4/5
 4. 【并行】每段视频各自以自己的关键帧起跳，一次性全部提交：
      for shot in shots:
          gen_video_t2v(
              prompt=该镜头的动作/运镜/音频描述,
-             reference_images=[该镜头关键帧图 url],     ← 关键：驱动源是图，不是上一段视频
-             reference_entities=[本镜出场的人/物/景],   ← entity 双保险
+             reference_images=[该镜头关键帧图 url] + [本镜主体参考图 url],   ← 关键：驱动源是图
              duration=该镜头时长)
          → 立即拿 task_id，先不 query
 5. 【并行】依次 query_video_task(task_id, save_name) 落盘各段          … skill_async_schedule
@@ -82,10 +86,10 @@
 
 ## 跨 skill 引用
 
-- 分镜契约字段标准 → [skill_storyboard.md](../skill_storyboard/skill_storyboard.md)
-- entity 建档与一致性 → [skill_entity_consistency.md](../skill_entity_consistency/skill_entity_consistency.md)
-- prompt 句式 / 4 类括号 / 踩坑速查 → [skill_prompt_engineering.md](../skill_prompt_engineering/skill_prompt_engineering.md)
-- 并行提交+轮询调度 → [skill_async_schedule.md](../skill_async_schedule/skill_async_schedule.md)
-- 审片模板 → [skill_director_vlm.md](../skill_director_vlm/skill_director_vlm.md)
-- 链式承接（本 skill 的并列替代） → [skill_video_chain.md](../skill_video_chain/skill_video_chain.md)
-- 后期配乐 → [skill_audio.md](../skill_audio/skill_audio.md)
+- 分镜契约字段标准 → [skill_storyboard.md](../skill_storyboard/SKILL.md)
+- 主体参考图与一致性 → [skill_entity_consistency.md](../skill_entity_consistency/SKILL.md)
+- prompt 句式 / 4 类括号 / 踩坑速查 → [skill_prompt_engineering.md](../skill_prompt_engineering/SKILL.md)
+- 并行提交+轮询调度 → [skill_async_schedule.md](../skill_async_schedule/SKILL.md)
+- 审片模板 → [skill_director_vlm.md](../skill_director_vlm/SKILL.md)
+- 链式承接（本 skill 的并列替代） → [skill_video_chain.md](../skill_video_chain/SKILL.md)
+- 后期配乐 → [skill_audio.md](../skill_audio/SKILL.md)

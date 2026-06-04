@@ -37,6 +37,61 @@ def _wrap(tool_name: str, fn, log_keys=None):
     return do_method
 
 
+# ============== 装饰器：一处声明 = 自动注册 + 自动生成 schema ==============
+# 用 @film_tool(...) 标注的工具，无需再手动写 TOOL_REGISTRY 一行，也无需在
+# tools_schema_film.json 里手写 function 定义——加新工具只改这一处。
+_DECORATED_TOOLS: dict = {}      # name -> fn（注入用）
+_DECORATED_SCHEMAS: list = []    # OpenAI 风格 function schema（喂给模型用）
+
+_PY2JSON = {str: "string", int: "integer", float: "number",
+            bool: "boolean", list: "array", dict: "object"}
+
+
+def film_tool(name: str, desc: str, params: dict | None = None,
+              required: list | None = None):
+    """声明一个 film 工具。一处即真相源：
+
+    - 自动登记进 _DECORATED_TOOLS（inject_film_tools 会挂到 handler）
+    - 自动生成 schema（build_film_schema 汇总后并入 TOOLS_SCHEMA）
+
+    params: {参数名: spec}。spec 可以是 python 类型（str/int/float/bool/list/dict），
+            也可以是 dict，如 {"type": float, "description": "...", "default": 1.0, "enum": [...]}。
+    required: 必填参数名列表。
+    """
+    params = params or {}
+    required = required or []
+
+    def deco(fn):
+        _DECORATED_TOOLS[name] = fn
+        props = {}
+        for pname, spec in params.items():
+            if isinstance(spec, type):
+                props[pname] = {"type": _PY2JSON.get(spec, "string")}
+            elif isinstance(spec, dict):
+                d = dict(spec)
+                if isinstance(d.get("type"), type):
+                    d["type"] = _PY2JSON.get(d["type"], "string")
+                props[pname] = d
+            else:
+                props[pname] = {"type": "string"}
+        _DECORATED_SCHEMAS.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"[Film] {desc}",
+                "parameters": {"type": "object", "properties": props,
+                               "required": required},
+            },
+        })
+        return fn
+    return deco
+
+
+def build_film_schema() -> list:
+    """返回所有用 @film_tool 声明的工具的 schema 列表（并入 TOOLS_SCHEMA）。"""
+    return list(_DECORATED_SCHEMAS)
+
+
 def _brief(obj) -> str:
     s = json.dumps(obj, ensure_ascii=False, default=str)
     return s[:160] + ("..." if len(s) > 160 else "")
@@ -53,6 +108,22 @@ def _active_pid(handler) -> Optional[str]:
 def _set_active_pid(handler, pid: str):
     handler._film_active_project = pid
     ws.set_active_project(pid)
+    _redirect_llm_log(handler, pid)
+
+
+def _redirect_llm_log(handler, pid: str):
+    """把 LLM 完整上下文 trace 指向 projects/<pid>/logs/llm_trace.txt。
+    注意：只设独立的 trace_path，不动 log_path——temp/ 下的默认简洁日志保持原版格式，
+    完整逐轮上下文 dump 只落到项目目录，避免 temp 文件爆量。"""
+    try:
+        log_dir = ws.project_dir(pid) / "logs"
+        log_dir.mkdir(exist_ok=True)
+        trace_path = str(log_dir / "llm_trace.txt")
+        client = getattr(getattr(handler, "parent", None), "llmclient", None)
+        if client is not None:
+            client.trace_path = trace_path
+    except Exception as e:
+        print(f"[WARN] LLM trace 重定向失败: {e}")
 
 
 def _project_path(handler, *parts) -> Path:
@@ -63,6 +134,15 @@ def _project_path(handler, *parts) -> Path:
 
 
 # ============== 项目工作区工具 ==============
+@film_tool(
+    name="project_create",
+    desc="创建影视项目工作区，建 projects/<id>/ 目录并设置预算。返回 project_id（后续工具自动使用活跃项目）",
+    params={
+        "brief": {"type": str, "description": "用户原始需求一句话"},
+        "max_seedance_calls": {"type": int, "description": "Seedance 调用次数统计上限，仅记账参考、不阻断（默认 0 = 不设限，可自由返工/重做）", "default": 0},
+    },
+    required=["brief"],
+)
 def _project_create(handler, args):
     brief = args.get("brief", "").strip()
     if not brief:
@@ -79,21 +159,12 @@ def _project_create(handler, args):
     }
 
 
-def _project_status(handler, args):
-    pid = args.get("project_id") or _active_pid(handler)
-    if not pid:
-        return {"status": "no_active_project", "all_projects": ws.list_projects()}
-    m = ws.read_manifest(pid)
-    return {
-        "project_id": m["project_id"],
-        "brief": m["brief"],
-        "phases": m["phases"],
-        "budget": m["budget"],
-        "storyboard_summary": m.get("storyboard_summary"),
-        "entities": m.get("entities", {}),
-    }
-
-
+@film_tool(
+    name="project_open",
+    desc="切换活跃项目（用于继续之前的项目）",
+    params={"project_id": str},
+    required=["project_id"],
+)
 def _project_open(handler, args):
     pid = args["project_id"]
     m = ws.read_manifest(pid)
@@ -101,197 +172,53 @@ def _project_open(handler, args):
     return {"project_id": pid, "phases": m["phases"]}
 
 
-# ============== Storyboard 分镜 ==============
-def _storyboard_set(handler, args):
-    """覆盖式写入分镜。args 即 board 本身（title/duration_total/ratio/style/synopsis/shots[]/entities_planned[]）。"""
-    pid = _active_pid(handler)
-    if not pid:
-        raise RuntimeError("尚无活跃项目，请先 project_create")
-    board = {k: v for k, v in args.items() if v is not None}
-    saved = ws.storyboard_set(pid, board)
-    return {
-        "ok": True,
-        "shots_count": len(saved.get("shots", [])),
-        "entities_planned_count": len(saved.get("entities_planned", [])),
-        "path": str(ws.storyboard_path(pid)),
-        "hint": "分镜已落盘。下一步：先在思考里写 <self_review> 自审 5 条（节奏/衔接/entity完整性/镜头多样性/预算估算），改完再做 entity_register。",
-    }
-
-
-def _storyboard_get(handler, args):
-    pid = _active_pid(handler)
-    if not pid:
-        raise RuntimeError("尚无活跃项目")
-    board = ws.storyboard_get(pid)
-    if not board:
-        return {"empty": True, "hint": "还没写分镜，请用 storyboard_set"}
-    return board
-
-
-# ============== Entity 档案库 ==============
-def _entity_register(handler, args):
-    """声明一个 entity（不出图）。先 register，后用 add_view 逐张生成视角/状态图。"""
-    pid = _active_pid(handler)
-    if not pid:
-        raise RuntimeError("尚无活跃项目，请先调用 project_create")
-    name = args["name"].strip()
-    etype = args.get("type", "character")
-    desc = args.get("description", "")
-    # canonical 不传时按 type 默认（character->front / prop->default / scene->wide）
-    canonical = args.get("canonical_view")
-    if not canonical:
-        canonical = ws.DEFAULT_VIEWS_NEEDED.get(etype, ["default"])[0]
-    views_needed = args.get("views_needed")  # None 时由 workspace 按 etype 默认展开
-    ref = ws.entity_register(pid, name, etype, desc,
-                             canonical_view=canonical,
-                             views_needed=views_needed)
-    pending = ref.get("views_needed", [])
-    return {
-        "name": ref["name"], "type": ref["type"],
-        "description": ref["description"],
-        "canonical_view": ref["canonical_view"],
-        "views_needed": pending,
-        "hint": (f"已登记。**character 默认三视图 = {pending}**，请按这个清单"
-                 f"逐张 entity_add_view（先出 {ref['canonical_view']} 当基准 → vlm 过审 → "
-                 f"再出剩余视角）。后续 gen_video_t2v 时把这个 entity 名加进 reference_entities，"
-                 f"会自动把所有 view 当多参考喂给 Seedance。"),
-    }
-
-
-def _entity_add_view(handler, args):
-    """给已有 entity 加一张视角/状态图。
-    - 第一次（views 为空）= 生成 canonical 基准图，**不带 ref**（除非外部传了 ref_image_url）
-    - 之后每次自动用 canonical_view 的 url 当 ref_image_url，强制保持一致
-    - 也支持显式覆盖 ref_image_url 用别的视角当参考
-    - **character 类型自动追加白底素材规范**：
-      - view='turnaround'（默认）→ 1 张图含 front/side/back 三视图（行业标准 character turnaround sheet）
-      - view='face_closeup' → 仅面部特写（防 ID 漂移用）
-      - view 含 front/side/back/3_4 等 → 单视角立绘（一般不需要，turnaround 默认就够）
-    """
-    pid = _active_pid(handler)
-    if not pid:
-        raise RuntimeError("尚无活跃项目")
-    entity_name = args["entity_name"]
-    view = args["view"]
-    prompt = args["prompt"]
-    size = args.get("size", "1024x1024")
-
-    ref = ws.entity_read(pid, entity_name)
-    views = ref.get("views", {})
-
-    # character 类型：根据 view 名自动追加不同的素材规范
-    if ref.get("type") == "character":
-        view_l = (view or "").lower()
-        if "turnaround" in view_l or view_l in ("default", ""):
-            # 行业标准三视图：一张白底图含 front + side + back 三个视角
-            # 默认 1024x1024 太挤，自动改成横向 16:9 让三视图排得开
-            if size == "1024x1024":
-                size = "1920x1080"
-            prompt = (f"{prompt}\n\n"
-                      f"【素材规范 · character turnaround sheet · 严格遵守】"
-                      f"一张图，**同一个角色的三视图**：左侧正面 front view、"
-                      f"中间侧面 side view（朝画面右侧 90 度）、右侧背面 back view，"
-                      f"三个视角左→中→右水平排列，**全部为同一角色**，"
-                      f"造型/服装/发型/配饰完全一致；"
-                      f"纯白色背景，无任何环境元素、无影子、无杂物；"
-                      f"每个视角下角色全身入镜（头到脚），T-pose 或自然站姿，"
-                      f"双手自然下垂或微微张开；光线均匀、无明显阴影；"
-                      f"游戏角色立绘 / 概念设计稿 / character reference sheet 风格。")
-        elif "face_closeup" in view_l or "face" in view_l or "closeup" in view_l:
-            # 大头照：防 ID 漂移
-            prompt = (f"{prompt}\n\n"
-                      f"【素材规范 · 面部特写大头照 · 严格遵守】"
-                      f"仅面部特写，精确裁剪到下颌底部以上，几乎不留颈部、肩部、背景；"
-                      f"正面、表情中性、双眼直视镜头；"
-                      f"纯白色背景；光线均匀、无明显阴影；"
-                      f"高清人脸参考素材，用于视频模型 ID 锁定。")
-        else:
-            # 兼容旧的单视角写法（front/side/back/3_4/action_*）
-            if "front" in view_l:
-                angle = "正面 front view"
-            elif "back" in view_l:
-                angle = "背面 back view"
-            elif "side" in view_l:
-                angle = "侧面 side view（人物身体朝向画面左侧或右侧 90 度）"
-            elif "three_quarter" in view_l or "3_4" in view_l:
-                angle = "3/4 侧前方视角"
-            else:
-                angle = f"{view} 视角"
-            prompt = (f"{prompt}\n\n"
-                      f"【素材规范，严格遵守】纯白色背景，无任何环境元素、无影子、无杂物；"
-                      f"人物全身入镜（头到脚），居中构图；"
-                      f"{angle}；"
-                      f"自然站姿，双手自然下垂或微微张开；"
-                      f"光线均匀，无明显阴影；"
-                      f"角色概念图风格，类似游戏角色立绘素材。")
-
-    # 决定 ref_image_url：用户显式给的 > canonical view 的 url > 无（首张）
-    ref_url = args.get("ref_image_url")
-    if not ref_url:
-        canonical = ref.get("canonical_view")
-        if canonical and canonical in views:
-            ref_url = views[canonical].get("url")
-
-    save = ws.entity_dir(pid, entity_name) / f"{view}.png"
-    save.parent.mkdir(parents=True, exist_ok=True)
-    r = sdk.gen_image(prompt, save, ref_image_url=ref_url, size=size)
-    ws.entity_record_view(pid, entity_name, view, r["path"], r["url"])
-    ws.log_model_call(pid, "seedream", {
-        "via_tool": "entity_add_view",
-        "name": f"{entity_name}.{view}",
-        "prompt": prompt,
-        "ref_image_url": ref_url,
-        "size": size,
-        "result": {"path": r["path"], "url": r["url"]},
-    })
-    return {
-        "entity": entity_name, "view": view,
-        "path": r["path"], "url": r["url"],
-        "used_ref": ref_url,
-        "hint": "已登记到 entity 档案。后续 gen_video_t2v 想用这个视角时，把 entity 名加进 reference_entities，或从 entity_get 取 url 加进 reference_images。",
-    }
-
-
-def _entity_get(handler, args):
-    """查 entity 档案。不传 entity_name 列出全部摘要；传了返回完整 ref.json（含每个 view 的 url）。"""
-    pid = _active_pid(handler)
-    if not pid:
-        raise RuntimeError("尚无活跃项目")
-    name = args.get("entity_name")
-    if not name:
-        return {"entities": ws.entity_list(pid)}
-    return ws.entity_read(pid, name)
-
-
 # ============== 视觉生成 ==============
+@film_tool(
+    name="gen_image",
+    desc="Seedream 4.0 文生图 / 图编辑 / 多图融合。带 ref_image_url（单图）或 ref_image_urls（多图，最多14张）即编辑/融合模式。watermark 默认 false（不加水印）。落到 shots/<name>.png。返回 {path, url, name}。角色/道具/场景的参考图也用这个工具生成——怎么用它维护跨镜头一致性（白底三视图 / 面部特写 / 锁参考）见 skills/skill_entity_consistency/SKILL.md",
+    params={
+        "prompt": {"type": str, "description": "图像描述"},
+        "name": {"type": str, "description": "产物文件名（不含扩展名）"},
+        "ref_image_url": {"type": str, "description": "[可选] 单张参考图 URL（图编辑模式）"},
+        "ref_image_urls": {"type": "array", "items": {"type": "string"}, "description": "[可选] 多张参考图 URL（最多 14 张，多图融合模式）。传了优先于 ref_image_url"},
+        "size": {"type": str, "description": "尺寸", "default": "1024x1024"},
+        "watermark": {"type": bool, "description": "是否加「AI 生成」水印", "default": False},
+    },
+    required=["prompt", "name"],
+)
 def _gen_image(handler, args):
-    """通用图像生成（关键帧、概念图等）。**注意：entity 角色/道具图请用 entity_add_view，不要用这个工具。**"""
+    """文生图 / 图编辑 / 多图融合（Seedream）。落到 shots/<name>.png，返回 {path, url, name}。
+    传 ref_image_urls（数组，最多 14 张）做多图融合；传单张也可。角色/道具/场景的参考图
+    也用这个工具生成——怎么用它维护跨镜头一致性见 skills/skill_entity_consistency/SKILL.md。"""
     prompt = args["prompt"]
     name = args.get("name", f"img_{int(time.time())}")
-    ref = args.get("ref_image_url")
+    # ref：数组优先，兼容单张 ref_image_url
+    refs = args.get("ref_image_urls")
+    if refs:
+        ref = refs if len(refs) > 1 else refs[0]
+    else:
+        ref = args.get("ref_image_url")
     size = args.get("size", "1024x1024")
+    watermark = bool(args.get("watermark", False))
     save = _project_path(handler, "shots", f"{name}.png")
     save.parent.mkdir(parents=True, exist_ok=True)
-    r = sdk.gen_image(prompt, save, ref_image_url=ref, size=size)
+    r = sdk.gen_image(prompt, save, ref_image_url=ref, size=size, watermark=watermark)
     ws.log_model_call(_active_pid(handler), "seedream", {
         "via_tool": "gen_image",
         "name": name,
         "prompt": prompt,
         "ref_image_url": ref,
         "size": size,
+        "watermark": watermark,
         "result": {"path": r["path"], "url": r["url"]},
     })
     return {"path": r["path"], "url": r["url"], "name": name}
 
 
 def _resolve_reference_images(handler, args) -> tuple:
-    """合并 reference_images（直接 url 列表）+ reference_entities（取 entity 所有 view 的 url）。
-    返回 (urls, sources)：
-      urls: list[str] —— 给 sdk 用的纯 url 列表
-      sources: list[dict] —— 每张图的来源摘要 [{url, from}]，用于审计日志，"from" 形如
-        "entity:dancer_male.front" / "raw_arg" / "raw_arg_dict"
+    """收集 reference_images（url 列表，可含字符串或 {url} dict）给 Seedance 当多模态参考。
+    返回 (urls, sources)：urls 是纯 url 列表；sources 是每张图来源摘要（审计用）。
     """
-    pid = _active_pid(handler)
     urls = []
     sources = []
     raw_imgs = args.get("reference_images") or []
@@ -302,20 +229,6 @@ def _resolve_reference_images(handler, args) -> tuple:
         elif isinstance(x, dict) and x.get("url"):
             urls.append(x["url"])
             sources.append({"url": x["url"], "from": "raw_arg_dict"})
-    ents = args.get("reference_entities") or []
-    for ent in ents:
-        if not pid:
-            continue
-        try:
-            ref = ws.entity_read(pid, ent)
-        except Exception:
-            sources.append({"url": None, "from": f"entity:{ent}", "error": "entity_not_found"})
-            continue
-        for view_name, view in (ref.get("views") or {}).items():
-            url = view.get("url")
-            if url:
-                urls.append(url)
-                sources.append({"url": url, "from": f"entity:{ent}.{view_name}"})
     return urls, sources
 
 
@@ -346,74 +259,30 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
     )
 
 
-# ===== BGM prompt linter（gen_video_t2v 调用前硬校验）=====
-# Seedance 看 prompt 时靠 4 类括号识别音频意图：（）BGM / <>音效 / {}台词 / 【】字幕
-# 本项目策略：BGM 走后期 gen_audio_bgm + audio_amix，禁止 Seedance 自己出 BGM。
-# 详见 skills/skill_audio/skill_audio.md "4 类特殊字符规范"
-import re as _re
-
-_BGM_KEYWORDS = [
-    "BGM", "bgm", "Bgm",
-    "背景音乐", "背景配乐", "配乐", "音乐", "插曲", "片头曲", "片尾曲", "主题曲",
-    "钢琴曲", "弦乐", "鼓点", "节拍", "旋律",
-    "music", "Music", "MUSIC", "soundtrack", "score", "melody", "rhythm", "beat",
-]
-# 中英括号都要管 — Seedance 文档里 4 类符号规范写的就是中文（）；英文 () 也常被 agent 误用
-_PAREN_PATTERN = _re.compile(r"[（(]([^（()）]{0,80})[）)]")
-
-
-def _lint_no_inline_bgm(prompt: str) -> str:
-    """检测 prompt 里"（…BGM/音乐/配乐…）"括号描述，发现就 raise。
-
-    匹配策略：
-      1. 中/英括号 () 内出现 BGM / 音乐 / 配乐 / soundtrack / melody 等关键词
-      2. 或顶格出现 "BGM:" / "配乐：" / "音乐：" 等冒号声明
-    返回原 prompt（未命中）；命中则 raise ValueError 让 agent 修。
-    """
-    # 检查 1：括号包裹的 BGM 描述
-    for m in _PAREN_PATTERN.finditer(prompt):
-        inside = m.group(1)
-        for kw in _BGM_KEYWORDS:
-            if kw in inside:
-                raise ValueError(
-                    f"BGM 闸门触发：prompt 中检测到括号 BGM 描述「{m.group(0)}」（命中关键词「{kw}」）。\n"
-                    f"本项目 BGM 走后期 gen_audio_bgm + audio_amix，Seedance 不出 BGM。\n"
-                    f"修法：① 删掉这段括号；② 想要的环境音改写成 <>音效（如 <远处沉闷鼓点声>）；\n"
-                    f"③ prompt 末尾追加「无背景音乐，仅保留环境音效与人物对白」。\n"
-                    f"详见 skills/skill_audio/skill_audio.md 的「4 类特殊字符规范」与「BGM prompt 编写要素」。"
-                )
-
-    # 检查 2：顶格 "BGM: xxx" / "配乐：xxx" 声明
-    for line in prompt.splitlines():
-        ls = line.strip()
-        for prefix in ("BGM:", "BGM：", "bgm:", "bgm：",
-                       "配乐:", "配乐：", "音乐:", "音乐：",
-                       "Music:", "music:", "Soundtrack:", "soundtrack:"):
-            if ls.startswith(prefix):
-                raise ValueError(
-                    f"BGM 闸门触发：prompt 中检测到 BGM 声明行「{ls[:60]}」。\n"
-                    f"本项目 BGM 走后期 gen_audio_bgm + audio_amix，Seedance 不出 BGM。\n"
-                    f"修法：删掉这一行；环境音改写成 <>音效；末尾加「无背景音乐」。"
-                )
-    return prompt
-
-
+@film_tool(
+    name="gen_video_t2v",
+    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审，再把这些图的 url 放进 reference_images。**链式衔接、配乐策略、跨镜头一致性详见 skills/skill_video_chain/SKILL.md / skills/skill_entity_consistency/SKILL.md**",
+    params={
+        "prompt": {"type": str, "description": "视频描述。链式段必须显式承接上段（'承接上段视频，...'）。需要锁首/尾帧画面用文字暗示：'opening frame: ...; ending frame: ...'"},
+        "name": {"type": str, "description": "产物文件名（不含扩展名）"},
+        "duration": {"type": int, "description": "视频时长 4-15 秒", "minimum": 4, "maximum": 15},
+        "generate_audio": {"type": bool, "description": "Seedance 2.0 原生同步音频。配乐策略见 skill_video_chain.md", "default": False},
+        "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图 URL 列表（最多 9 张）。把本 shot 角色/道具/场景的参考图 url 都放进来锁一致性"},
+        "reference_video_url": {"type": str, "description": "[链式段（≥2 段视频中第 N≥2 段）必传] 上一段视频。可传 query_video_task 返回的 video_url（云端 url），也可传 path（本地 mp4 路径，工具会自动反查同名 .url.txt sidecar 取云端 url）。最多 1 段"},
+        "resolution": {"type": str, "enum": ["480p", "720p", "1080p"], "default": "720p"},
+        "ratio": {"type": str, "enum": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], "default": "16:9"},
+        "seed": {"type": int, "description": "[可选] 随机种子（-1 随机）。传同一 seed + 同 prompt 可复现近似画面，用于锁定/微调"},
+        "camera_fixed": {"type": bool, "description": "[可选] 是否固定机位（不运镜）。固定机位镜头建议传 true，比只在 prompt 里写更稳"},
+    },
+    required=["prompt", "name"],
+)
 def _gen_video_t2v(handler, args):
     """Seedance 视频生成（仅多模态参考模式）。
-    参考媒体三件套：reference_entities（按名展开 entity 所有 view）/ reference_images / reference_video_url。
+    参考媒体：reference_images（最多 9 张 url）/ reference_video_url（链式段承接上一段）。
     本工具是**唯一**的视频生成入口——已删除 i2v / 首尾帧模式（互斥 reference 不划算）。
     """
     prompt = args["prompt"]
-    # ===== BGM 硬闸门（双层）=====
-    # 闸门 1（代码层 lint）：禁止 prompt 写"（…BGM/音乐/配乐…）"括号描述
-    #   原因：本项目 BGM 走后期 gen_audio_bgm + audio_amix，Seedance 出对白/音效就好。
-    #   prompt 里写括号 BGM 描述 → 模型会自己脑补 BGM 撕裂 → 拼接后段间断裂
-    #   详见 skills/skill_audio/skill_audio.md "4 类特殊字符规范"
-    prompt = _lint_no_inline_bgm(prompt)
-    # 闸门 2（兜底）：generate_audio=True 时若 prompt 没"无背景音乐"句，自动追加
     generate_audio = bool(args.get("generate_audio", False))
-    if generate_audio and "无背景音乐" not in prompt and "无 BGM" not in prompt and "no bgm" not in prompt.lower():
-        prompt = prompt.rstrip("。.\n") + "。无背景音乐，仅保留环境音效与人物对白。"
 
     name = args.get("name", f"video_{int(time.time())}")
     pid = _active_pid(handler)
@@ -422,6 +291,8 @@ def _gen_video_t2v(handler, args):
     ref_urls, ref_sources = _resolve_reference_images(handler, args)
     ref_video_in = args.get("reference_video_url")
     ref_video = _resolve_reference_video(ref_video_in)
+    seed = args.get("seed")
+    camera_fixed = args.get("camera_fixed")
     r = sdk.submit_video_task(
         prompt,
         reference_images=ref_urls or None,
@@ -430,6 +301,8 @@ def _gen_video_t2v(handler, args):
         generate_audio=generate_audio,
         resolution=args.get("resolution", "720p"),
         ratio=args.get("ratio", "16:9"),
+        seed=seed,
+        camera_fixed=camera_fixed,
     )
     ws.log_seedance_call(pid, {
         "tool": "gen_video_t2v", "name": name, "task_id": r["task_id"],
@@ -449,9 +322,10 @@ def _gen_video_t2v(handler, args):
         "ratio": args.get("ratio", "16:9"),
         "resolution": args.get("resolution", "720p"),
         "generate_audio": generate_audio,
+        "seed": seed,
+        "camera_fixed": camera_fixed,
         "reference_video_url": ref_video,
         "reference_video_url_input": ref_video_in,
-        "reference_entities": args.get("reference_entities") or [],
         "reference_images_count": len(ref_urls),
         "reference_sources": ref_sources,
     })
@@ -468,6 +342,18 @@ def _gen_video_t2v(handler, args):
 _VIDEO_TASK_STARTS = {}
 
 
+@film_tool(
+    name="query_video_task",
+    desc="查询 Seedance 任务状态。默认阻塞等到 succeeded/failed，**自动按 duration 估 ETA + 动态轮询间隔 + 打印进度条**。建议传 duration（视频时长秒数），ETA 会算成 60 + 15 * duration（10s 视频约 210s，15s 视频约 285s）。succeeded 时返回 {path?, video_url}（path: save_name 给了的话；video_url: 云端 url 可直接当下一段 reference_video_url）。同时把 url 写到 <save_name>.url.txt sidecar 方便本地 path 反查。串行 vs 并行调度策略见 skills/skill_async_schedule/SKILL.md",
+    params={
+        "task_id": {"type": str, "description": "gen_video_t2v 返回的 task_id"},
+        "save_name": {"type": str, "description": "[可选] succeeded 时落盘的文件名（不含扩展名）"},
+        "duration": {"type": float, "description": "[强烈建议] 本视频时长（秒），用于估 ETA + 节流 query 调用"},
+        "wait": {"type": bool, "description": "是否阻塞等待", "default": True},
+        "max_wait": {"type": int, "description": "最长等待秒数；不传时根据 duration 自动算（ETA + 60s 缓冲）"},
+    },
+    required=["task_id"],
+)
 def _query_video_task(handler, args):
     """查询 Seedance 任务状态。
     默认行为：阻塞等待到 succeeded/failed。
@@ -572,12 +458,6 @@ def _query_video_task(handler, args):
                 sidecar.write_text(video_url, encoding="utf-8")
             except Exception:
                 pass
-        out["hint"] = (
-            "已拿到产物。⚠️ **下一步必须立即 vlm_understand 审片**（参考 skill_director_vlm.md），"
-            f"name='review_shot_{save_name or '<shot_id>'}'。"
-            "**不过 vlm 不许出下一段视频**——链式衔接对上一段质量极敏感，瑕疵会被放大。"
-            "审过了再做下一段时，reference_video_url 既可传 video_url 也可传 path（本地文件会被自动上传）。"
-        )
     elif last["status"] == "failed":
         _VIDEO_TASK_STARTS.pop(task_id, None)  # 任务终结，清掉进度条记忆
         out["error"] = last["raw"].get("error") or last["raw"]
@@ -586,14 +466,12 @@ def _query_video_task(handler, args):
     return out
 
 
-def _sleep(handler, args):
-    """让 agent 主动等一段时间，常用于异步任务轮询间隔。"""
-    seconds = float(args.get("seconds", 10))
-    seconds = min(seconds, 120)  # 上限 2 分钟，防止误用
-    time.sleep(seconds)
-    return {"status": "ok", "slept_seconds": seconds}
-
-
+@film_tool(
+    name="cancel_video_task",
+    desc="尝试取消 Seedance 任务（DELETE）。⚠️ 仅当任务处于 queued / pending 等未启动状态时可取消；一旦 status=running 则会返回 409 InvalidAction.RunningTaskDeletion——平台不支持中途打断。succeeded / 不存在也会 graceful 返回。最佳实践：用户中断后立即调一次本工具，能取消的就取消，不能取消的就只能等它跑完（已经计费）",
+    params={"task_id": {"type": str, "description": "Seedance 任务 id"}},
+    required=["task_id"],
+)
 def _cancel_video_task(handler, args):
     """主动取消 Seedance 云端任务（防止本地中断后云端继续烧预算）。"""
     task_id = args["task_id"]
@@ -602,6 +480,15 @@ def _cancel_video_task(handler, args):
 
 
 # ============== 视频处理 ==============
+@film_tool(
+    name="video_concat",
+    desc="ffmpeg 硬拼接（无重编码，秒级）。要求所有 clip 编码参数一致",
+    params={
+        "clips": {"type": "array", "items": {"type": "string"}, "description": "视频文件路径列表"},
+        "name": {"type": str, "description": "输出文件名"},
+    },
+    required=["clips", "name"],
+)
 def _video_concat(handler, args):
     clips = args["clips"]
     name = args.get("name", f"concat_{int(time.time())}")
@@ -609,53 +496,157 @@ def _video_concat(handler, args):
     return sdk.video_concat(clips, save)
 
 
+@film_tool(
+    name="video_crossfade",
+    desc="ffmpeg 交叉溶解（视频+音频同步淡入淡出）。会重编码，慢于 concat",
+    params={
+        "clip_a": str,
+        "clip_b": str,
+        "name": str,
+        "duration": {"type": float, "description": "过渡时长(秒)", "default": 1.0},
+        "offset": {"type": float, "description": "过渡开始的时间点(从 clip_a 起算)", "default": 4.0},
+        "transition": {"type": str, "description": "xfade 转场类型：fade/wipeleft/wiperight/slideup/slidedown/circleopen/circleclose/dissolve/radial 等，见 ffmpeg xfade", "default": "fade"},
+        "preset": {"type": str, "description": "[可选] x264 编码档位（ultrafast..veryslow），慢=画质好体积小", "default": "ultrafast"},
+    },
+    required=["clip_a", "clip_b", "name"],
+)
 def _video_crossfade(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'crossfade')}.mp4")
     return sdk.video_crossfade(args["clip_a"], args["clip_b"], save,
                                duration=float(args.get("duration", 1.0)),
-                               offset=float(args.get("offset", 4.0)))
+                               offset=float(args.get("offset", 4.0)),
+                               transition=args.get("transition", "fade"),
+                               preset=args.get("preset", "ultrafast"))
 
 
+@film_tool(
+    name="video_trim",
+    desc="裁剪视频 [start, end] 秒区间",
+    params={
+        "clip": str,
+        "start": float,
+        "end": float,
+        "name": str,
+        "preset": {"type": str, "description": "[可选] x264 编码档位", "default": "ultrafast"},
+    },
+    required=["clip", "start", "end", "name"],
+)
 def _video_trim(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'trim')}.mp4")
-    return sdk.video_trim(args["clip"], save, float(args["start"]), float(args["end"]))
+    return sdk.video_trim(args["clip"], save, float(args["start"]), float(args["end"]),
+                          preset=args.get("preset", "ultrafast"))
 
 
+@film_tool(
+    name="video_speed",
+    desc="视频变速（音视频同步）。factor>1 加速、<1 慢动作。⚠️ 严禁用 0.5 慢动作来凑分镜规定的总时长，那是作弊；正常用法是节奏调整 / 高速 / 慢动作镜头语言",
+    params={
+        "clip": str,
+        "factor": {"type": float, "description": "1.0=原速，2.0=2x快，0.5=慢动作"},
+        "name": str,
+        "preset": {"type": str, "description": "[可选] x264 编码档位", "default": "ultrafast"},
+    },
+    required=["clip", "factor", "name"],
+)
 def _video_speed(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'speed')}.mp4")
-    return sdk.video_speed(args["clip"], save, float(args["factor"]))
+    return sdk.video_speed(args["clip"], save, float(args["factor"]),
+                           preset=args.get("preset", "ultrafast"))
 
 
+@film_tool(
+    name="video_overlay",
+    desc="画中画。pip 缩到 pip_scale 后叠在 base 的指定角",
+    params={
+        "base": str,
+        "pip": str,
+        "name": str,
+        "pip_scale": {"type": float, "default": 0.33},
+        "position": {"type": str, "enum": ["tl", "tr", "bl", "br"], "default": "br"},
+        "margin": {"type": int, "default": 20},
+        "preset": {"type": str, "description": "[可选] x264 编码档位", "default": "ultrafast"},
+    },
+    required=["base", "pip", "name"],
+)
 def _video_overlay(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'pip')}.mp4")
     return sdk.video_overlay(args["base"], args["pip"], save,
                              pip_scale=float(args.get("pip_scale", 0.33)),
                              position=args.get("position", "br"),
-                             margin=int(args.get("margin", 20)))
+                             margin=int(args.get("margin", 20)),
+                             preset=args.get("preset", "ultrafast"))
 
 
+@film_tool(
+    name="video_fade",
+    desc="头尾黑场（音视频同步）",
+    params={
+        "clip": str,
+        "name": str,
+        "fade_in": {"type": float, "default": 0.5},
+        "fade_out": {"type": float, "default": 0.5},
+        "total_duration": {"type": float, "description": "[可选] 视频总时长，不传会用 ffprobe 探测"},
+        "preset": {"type": str, "description": "[可选] x264 编码档位", "default": "ultrafast"},
+    },
+    required=["clip", "name"],
+)
 def _video_fade(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'fade')}.mp4")
     return sdk.video_fade(args["clip"], save,
                           fade_in=float(args.get("fade_in", 0.5)),
                           fade_out=float(args.get("fade_out", 0.5)),
-                          total_duration=args.get("total_duration"))
+                          total_duration=args.get("total_duration"),
+                          preset=args.get("preset", "ultrafast"))
 
 
+@film_tool(
+    name="video_portrait",
+    desc="横转竖（如 1280x720 → 720x1280），居中裁剪不变形",
+    params={
+        "clip": str,
+        "name": str,
+        "width": {"type": int, "default": 720},
+        "height": {"type": int, "default": 1280},
+        "preset": {"type": str, "description": "[可选] x264 编码档位", "default": "ultrafast"},
+    },
+    required=["clip", "name"],
+)
 def _video_portrait(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'portrait')}.mp4")
     return sdk.video_portrait(args["clip"], save,
                               width=int(args.get("width", 720)),
-                              height=int(args.get("height", 1280)))
+                              height=int(args.get("height", 1280)),
+                              preset=args.get("preset", "ultrafast"))
 
 
 # ============== 音频 ==============
+@film_tool(
+    name="audio_amix",
+    desc="把 BGM 音频混入视频原音轨。bgm_volume 一般 0.1-0.3 避免压过对白",
+    params={
+        "base_video": str,
+        "bgm_audio": str,
+        "name": str,
+        "bgm_volume": {"type": float, "default": 0.2},
+    },
+    required=["base_video", "bgm_audio", "name"],
+)
 def _audio_amix(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'amix')}.mp4")
     return sdk.audio_amix(args["base_video"], args["bgm_audio"], save,
                           bgm_volume=float(args.get("bgm_volume", 0.2)))
 
 
+@film_tool(
+    name="tts",
+    desc="豆包大模型语音合成。当前需 TTS_APP_ID/TTS_TOKEN，无 key 会报错",
+    params={
+        "text": str,
+        "name": str,
+        "voice": {"type": str, "default": "default"},
+    },
+    required=["text", "name"],
+)
 def _tts(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'tts')}.mp3")
     r = sdk.tts(args["text"], save, voice=args.get("voice", "default"))
@@ -669,17 +660,27 @@ def _tts(handler, args):
     return r
 
 
+@film_tool(
+    name="gen_audio_bgm",
+    desc="豆包·音乐 GenBGM 生成纯音乐（异步，返回 task_id，需 query_audio_task 轮询）。当前需 VOLC_AK/SK，无 key 会报错。配乐流程详见 skills/skill_audio/SKILL.md",
+    params={
+        "prompt": {"type": str, "description": "音乐风格描述（自然语言写明风格/情绪/乐器/场景，建议 ≥50 字）"},
+        "name": str,
+        "duration": {"type": int, "description": "时长（秒），30-120", "minimum": 30, "maximum": 120, "default": 30},
+        "segments": {"type": "array", "description": "[可选] 段落结构，传了优先级高于 duration。每段 {Name, Duration}，Name ∈ intro/verse/chorus/inst/bridge/outro，Duration 总和需 [30,120]", "items": {"type": "object", "properties": {"Name": {"type": "string", "enum": ["intro", "verse", "chorus", "inst", "bridge", "outro"]}, "Duration": {"type": "integer"}}, "required": ["Name", "Duration"]}},
+        "enable_input_rewrite": {"type": bool, "description": "[可选] 让模型自动改写/丰富 prompt（版权校验失败时可尝试开启）", "default": False},
+    },
+    required=["prompt", "name"],
+)
 def _gen_audio_bgm(handler, args):
     """提交 BigMusic GenBGM 任务（异步）。跟 gen_video_t2v 完全对称：只提交，立即回 task_id。
 
     必填：prompt（自然语言描述风格/情绪/乐器/场景/段落结构，建议 ≥50 字）
     选填：name（落盘文件名，默认 bgm_<ts>）/ duration（30-120 秒，默认 30）/
           segments（[{"Name":"intro","Duration":10},...]，传了优先级高于 duration）/
-          enable_input_rewrite（让模型自动改写 prompt，默认 false）/
-          base_video（成片路径；传了会自动 probe 时长并把 duration 覆写为
-                      clamp(probe, 30, 120)，agent 不用自己算等长）
+          enable_input_rewrite（让模型自动改写 prompt，默认 false）
 
-    返回：{task_id, name, duration, hint}
+    返回：{task_id, name, duration}
     后续：用 query_audio_task(task_id, save_name) 轮询并落盘。
     """
     prompt = args["prompt"]
@@ -687,20 +688,6 @@ def _gen_audio_bgm(handler, args):
     duration = int(args.get("duration", 30))
     segments = args.get("segments")
     enable_input_rewrite = bool(args.get("enable_input_rewrite", False))
-
-    # base_video 兜底：传了就自动 probe 算等长，省得 agent 自己 probe + clamp
-    base_video = args.get("base_video")
-    auto_duration_note = None
-    if base_video and not segments:
-        bv_path = _project_path(handler, base_video) if not Path(base_video).is_absolute() else Path(base_video)
-        if bv_path.exists():
-            probed = sdk.probe_duration(str(bv_path))
-            new_duration = max(30, min(120, int(round(probed))))
-            auto_duration_note = (
-                f"base_video={bv_path.name} probe={probed:.2f}s -> "
-                f"duration={new_duration}s (clamp 到火山 [30,120] 区间)"
-            )
-            duration = new_duration
 
     pid = _active_pid(handler)
     r = sdk.submit_bgm_task(
@@ -715,28 +702,30 @@ def _gen_audio_bgm(handler, args):
         "duration": duration,
         "segments": segments,
         "enable_input_rewrite": enable_input_rewrite,
-        "base_video": str(base_video) if base_video else None,
-        "auto_duration_note": auto_duration_note,
     })
-    out = {
-        "task_id": r["task_id"],
-        "name": name,
-        "duration": duration,
-        "hint": (
-            "BGM 任务已提交。请用 query_audio_task(task_id, save_name='<name>') "
-            "轮询并落盘到 projects/<pid>/audios/<save_name>.mp3。预计 30-90s 完成。"
-            " amix 后必须 vlm_understand review_final_with_bgm 审过审，不过审重做 BGM prompt。"
-        ),
-    }
-    if auto_duration_note:
-        out["auto_duration_note"] = auto_duration_note
-    return out
+    return {"task_id": r["task_id"], "name": name, "duration": duration}
+
+
+# 别名兜底：agent 调旧名 gen_bgm 也能 work，避免脑补"未配置密钥"。
+# 只注入、不进 schema（不向模型暴露旧名，但旧名调用仍可路由到 gen_audio_bgm）。
+_DECORATED_TOOLS["gen_bgm"] = _gen_audio_bgm
 
 
 # 跟 _VIDEO_TASK_STARTS 对称：BGM 进度条跨调用记忆
 _BGM_TASK_STARTS = {}
 
 
+@film_tool(
+    name="query_audio_task",
+    desc="查询 BGM（gen_audio_bgm）任务状态，跟 query_video_task 对称。默认阻塞轮询到 succeeded/failed。succeeded 时返回 {path?, audio_url}（path: save_name 给了的话落到 audios/<save_name>.mp3）。⚠️ 查 BGM 任务必须用本工具，不要用 query_video_task（那是查 Seedance 视频的，task_id 不通用）。配乐流程详见 skills/skill_audio/SKILL.md",
+    params={
+        "task_id": {"type": str, "description": "gen_audio_bgm 返回的 task_id"},
+        "save_name": {"type": str, "description": "[可选] succeeded 时落盘的文件名（不含扩展名），落到 audios/<save_name>.mp3"},
+        "wait": {"type": bool, "description": "是否阻塞等待", "default": True},
+        "max_wait": {"type": int, "description": "最长等待秒数，默认 180（BGM 比视频快）"},
+    },
+    required=["task_id"],
+)
 def _query_audio_task(handler, args):
     """查询 BGM 任务状态。跟 query_video_task 对称：默认阻塞轮询到 succeeded/failed。
 
@@ -816,10 +805,6 @@ def _query_audio_task(handler, args):
         out["style_info"] = last.get("style_info")
         if last.get("path"):
             out["path"] = last["path"]
-        out["hint"] = (
-            "BGM 已落盘到 audios/。下一步：拼接好 video 后用 audio_amix("
-            "base_video, bgm_audio=path, bgm_volume=0.15-0.25) 铺底成片。"
-        )
     elif last["status"] == "failed":
         _BGM_TASK_STARTS.pop(task_id, None)
         out["error"] = last.get("error")
@@ -831,12 +816,35 @@ def _query_audio_task(handler, args):
 
 
 # ============== 评估归档 ==============
+@film_tool(
+    name="extract_frames",
+    desc="ffmpeg 抽帧（不调 VLM，纯抽帧用于 debug 或缩略图）",
+    params={
+        "clip": str,
+        "name": str,
+        "fps": {"type": float, "description": "每秒抽几张", "default": 1.0},
+    },
+    required=["clip", "name"],
+)
 def _extract_frames(handler, args):
     name = args.get("name", f"frames_{int(time.time())}")
     save_dir = _project_path(handler, "reviews", name)
     return sdk.extract_frames(args["clip"], save_dir, fps=float(args.get("fps", 1.0)))
 
 
+@film_tool(
+    name="burn_subtitle",
+    desc="在视频上烧录文字字幕（drawtext，永久叠加）",
+    params={
+        "clip": str,
+        "text": str,
+        "name": str,
+        "start": {"type": float, "default": 0},
+        "end": {"type": float, "default": 3},
+        "fontsize": {"type": int, "default": 32},
+    },
+    required=["clip", "text", "name"],
+)
 def _burn_subtitle(handler, args):
     save = _project_path(handler, "composed", f"{args.get('name', 'subtitled')}.mp4")
     return sdk.burn_subtitle(args["clip"], save, args["text"],
@@ -845,6 +853,22 @@ def _burn_subtitle(handler, args):
                              fontsize=int(args.get("fontsize", 32)))
 
 
+@film_tool(
+    name="vlm_understand",
+    desc="开放式视觉理解：自己写 question，Doubao Seed 2.0 pro 回答。视频走原生理解（不抽帧），图片走多图理解。结果落到 reviews/<name>.json。**审片场景的提问规范、决策树、提问模板详见 skills/skill_director_vlm/SKILL.md，调用前必读**",
+    params={
+        "clip": {"description": "视频路径（str），或多张图片路径列表（array，对比/多帧审查时用）"},
+        "question": {"type": str, "description": "你想让 VLM 回答的问题，越具体越好；审片场景按 skill_director_vlm.md 模板写"},
+        "system": {"type": str, "description": "[可选] 系统提示，设定 VLM 角色/输出格式（如 '你是严格的影视审片导演，只输出 JSON'）"},
+        "mode": {"type": str, "enum": ["auto", "video", "frames"], "default": "auto", "description": "auto=视频走原生理解、图片走多图；frames=强制抽帧"},
+        "fps": {"type": float, "default": 1.0},
+        "max_frames": {"type": int, "description": "frames 模式下最多抽几帧送 VLM", "default": 16},
+        "max_tokens": {"type": int, "default": 4096},
+        "temperature": {"type": float, "default": 0.1},
+        "name": {"type": str, "description": "归档文件名（不含扩展名）。**审片场景必须按规范命名**，便于事后翻查：审 entity 视图用 `review_entity_<entity名>_<view名>`（如 review_entity_dancer_girl_front）；审单镜头视频用 `review_shot_<shot_id>`（如 review_shot_s01）；审合成成片用 `review_compose_v<版本号>`（如 review_compose_v1）；非审片场景才用默认 understand 前缀", "default": "understand"},
+    },
+    required=["clip", "question"],
+)
 def _vlm_understand(handler, args):
     """开放式视觉理解：你自己写 question，VLM（Seed 2.0 pro）回答。
     支持图片或视频输入，模式自适应（视频走原生理解，图片走多图理解）。
@@ -855,7 +879,7 @@ def _vlm_understand(handler, args):
       - 让 VLM 定位异常时间区间（"第几秒剑消失了"）
       - 让 VLM 对比两版（一次传两个 clip 用图片模式）
 
-    审片场景的提问规范、决策树、提问模板详见 skills/skill_director_vlm/skill_director_vlm.md，
+    审片场景的提问规范、决策树、提问模板详见 skills/skill_director_vlm/SKILL.md，
     agent 调用前先读 md 自己拼好 question。
     """
     pid = _active_pid(handler)
@@ -866,26 +890,38 @@ def _vlm_understand(handler, args):
     question = args["question"]
     fps = float(args.get("fps", 1.0))
     name = args.get("name", f"understand_{int(time.time())}")
+    system = args.get("system")
+    max_frames = int(args.get("max_frames", 16))
 
-    # 判断是视频还是图片
-    suffix = Path(clip).suffix.lower()
-    is_video = suffix in (".mp4", ".mov", ".avi", ".mkv", ".webm")
+    # clip 支持单路径（str）或多图列表（list）——多图列表强制走图片模式
+    clip_is_list = isinstance(clip, list)
+    _VIDEO_SUFFIX = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+    # 单元素列表里若是视频文件 → 解包成单路径，走视频原生理解（doubao-seed-2.0-pro 全模态，不抽帧）
+    if clip_is_list and len(clip) == 1 and Path(clip[0]).suffix.lower() in _VIDEO_SUFFIX:
+        clip = clip[0]
+        clip_is_list = False
+    first = clip[0] if clip_is_list else clip
+    suffix = Path(first).suffix.lower()
+    is_video = (not clip_is_list) and suffix in _VIDEO_SUFFIX
 
     if is_video and args.get("mode", "auto") != "frames":
         raw = sdk.doubao_video_understand(clip, question,
                                           max_tokens=int(args.get("max_tokens", 4096)),
                                           temperature=float(args.get("temperature", 0.1)),
-                                          fps=fps)
+                                          fps=fps, system=system)
     else:
         if is_video:
             tmp = _project_path(handler, "reviews", name) if pid else Path(f"/tmp/{name}")
             fr = sdk.extract_frames(clip, tmp, fps=fps)
-            paths = fr["paths"][:5]
+            paths = fr["paths"][:max_frames]
+        elif clip_is_list:
+            paths = clip
         else:
             paths = [clip]
         raw = sdk.doubao_vlm(paths, question,
                              max_tokens=int(args.get("max_tokens", 4096)),
-                             temperature=float(args.get("temperature", 0.1)))
+                             temperature=float(args.get("temperature", 0.1)),
+                             system=system)
 
     answer = raw["choices"][0]["message"]["content"].strip()
 
@@ -914,50 +950,19 @@ def _vlm_understand(handler, args):
 
 
 # ============== 注入到 handler ==============
-TOOL_REGISTRY = {
-    # 工作区
-    "project_create": _project_create,
-    "project_status": _project_status,
-    "project_open":   _project_open,
-    # 分镜
-    "storyboard_set": _storyboard_set,
-    "storyboard_get": _storyboard_get,
-    # Entity 档案库
-    "entity_register": _entity_register,
-    "entity_add_view": _entity_add_view,
-    "entity_get":      _entity_get,
-    # 视觉生成
-    "gen_image":         _gen_image,
-    "gen_video_t2v":     _gen_video_t2v,
-    "query_video_task":  _query_video_task,
-    "cancel_video_task": _cancel_video_task,
-    "sleep":             _sleep,
-    # 视频处理
-    "video_concat":    _video_concat,
-    "video_crossfade": _video_crossfade,
-    "video_trim":      _video_trim,
-    "video_speed":     _video_speed,
-    "video_overlay":   _video_overlay,
-    "video_fade":      _video_fade,
-    "video_portrait":  _video_portrait,
-    # 音频
-    "audio_amix":       _audio_amix,
-    "tts":              _tts,
-    "gen_audio_bgm":    _gen_audio_bgm,
-    "gen_bgm":          _gen_audio_bgm,  # 别名兜底：agent 调旧名也能 work，避免脑补"未配置密钥"
-    "query_audio_task": _query_audio_task,
-    # 评估归档
-    "extract_frames": _extract_frames,
-    "vlm_understand": _vlm_understand,
-    "burn_subtitle":  _burn_subtitle,
-}
+# 所有 film 工具现在都用 @film_tool 装饰器声明（含别名 gen_bgm），自动登记到
+# _DECORATED_TOOLS。TOOL_REGISTRY 保留为空 dict 仅作向后兼容的扩展点（手动塞特殊
+# 工具时可用），常规加工具只需在函数上挂 @film_tool。
+TOOL_REGISTRY = {}
 
 
 def inject_film_tools(handler):
-    """把所有 film 工具挂到 handler 实例上。"""
-    for name, fn in TOOL_REGISTRY.items():
+    """把所有 film 工具挂到 handler 实例上。
+    包含两类：手写 TOOL_REGISTRY（兜底扩展点）+ 用 @film_tool 装饰器声明的（_DECORATED_TOOLS）。
+    """
+    import types
+    merged = {**TOOL_REGISTRY, **_DECORATED_TOOLS}
+    for name, fn in merged.items():
         method = _wrap(name, fn)
-        # 绑到实例
-        import types
         setattr(handler, f"do_{name}", types.MethodType(method, handler))
     return handler

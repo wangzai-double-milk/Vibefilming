@@ -50,8 +50,8 @@
 
 | 类别 | 工具 |
 |---|---|
-| 工作区 | `project_create` / `project_status` / `project_open` |
-| 视觉生成 | `gen_image` / `gen_video_t2v` / `gen_video_i2v` / `query_video_task` / `sleep` |
+| 工作区 | `project_create` / `project_open`（项目状态/分镜用 file_read/file_write 读写 manifest.json / storyboard.json） |
+| 视觉生成 | `gen_image` / `gen_video_t2v` / `query_video_task` / `cancel_video_task` |
 | 视频处理 | `video_concat` / `video_crossfade` / `video_trim` / `video_speed` / `video_overlay` / `video_fade` / `video_portrait` / `burn_subtitle` |
 | 视觉评估 | `vlm_understand` (开放问答) / `extract_frames` |
 | 音频 | `audio_amix` / `tts` / `gen_audio_bgm` + `query_audio_task`（火山 BigMusic GenBGM，整片 BGM 唯一入口）/ `probe_duration` |

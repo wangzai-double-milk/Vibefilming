@@ -23,32 +23,29 @@
 | 工具 | 干嘛的 |
 |---|---|
 | `project_create` | 开一个新片子的工作区，定下预算（最多出多少段视频） |
-| `project_status` | 看当前片子进行到哪了、花了多少预算 |
 | `project_open` | 切回之前某个片子继续做 |
 
+> 想看片子进行到哪、花了多少预算？用通用 `file_read` 读 `projects/<pid>/manifest.json` 即可，不再有专门工具。
+
 ### 📋 分镜（开拍前的剧本）
-| 工具 | 干嘛的 |
-|---|---|
-| `storyboard_set` | 写/改分镜表：几个镜头、每镜多长、谁出场、什么机位、做什么动作 |
-| `storyboard_get` | 读回当前分镜表 |
+分镜**不再是独立工具**——用通用 `file_write` 把分镜 JSON 写到 `projects/<pid>/storyboard.json`（几个镜头、每镜多长、谁出场、什么机位、做什么动作），用 `file_read` 读回。写法/必含字段见 `skills/skill_storyboard/SKILL.md`。
 
 ### 🎭 角色 / 道具 / 场景（保证前后长得一样）
-| 工具 | 干嘛的 |
-|---|---|
-| `entity_register` | 登记一个角色/道具/场景的档案（先建卡，不出图） |
-| `entity_add_view` | 给已登记的角色出形象图（正面/侧面/背面三视图，或道具的某个状态） |
-| `entity_get` | 查某个角色/道具的档案和已出的图 |
+没有专门的"角色档案"工具——一个角色/道具/场景**就是几张图**：
 
-> 这一组是**防"变脸"**的关键：先把每个角色/道具的样子定死，后面所有镜头都拿它当参照，人物就不会拍着拍着换了张脸。
+1. 用 `gen_image` 把每个角色/道具/场景的形象图先出好（正面/侧面/背面、或道具的某个状态）；
+2. 自己记住「主体名 → 图 url」的对应关系；
+3. 出视频时把这些 url 放进 `gen_video_t2v` 的 `reference_images`，所有镜头都拿同一批图当参照。
+
+> 这是**防"变脸"**的关键：先把每个角色/道具的样子用 gen_image 定死并过审，后面所有镜头都喂同一批参考图，人物就不会拍着拍着换了张脸。具体出图模板/防漂移方法见 `skills/skill_entity_consistency/SKILL.md`。
 
 ### 🖼️ 出图 / 出视频
 | 工具 | 干嘛的 |
 |---|---|
 | `gen_image` | 文字生成一张图，或在已有图上做修改（出关键帧、海报、九宫格都用它） |
-| `gen_video_t2v` | **生成视频**的唯一入口。可以喂参考图/参考角色/上一段视频来保证连贯。提交后立刻返回，不当场等 |
+| `gen_video_t2v` | **生成视频**的唯一入口。可以喂参考图（reference_images）/上一段视频来保证连贯。提交后立刻返回，不当场等 |
 | `query_video_task` | 查视频出好了没（会自动等待 + 显示进度条），出好就存盘 |
 | `cancel_video_task` | 取消还没开始跑的视频任务（已经在跑的取消不了，会照常计费） |
-| `sleep` | 主动等几秒（一般用不到，查询工具自带等待） |
 
 ### ✂️ 后期剪辑
 | 工具 | 干嘛的 |
@@ -93,21 +90,21 @@
 
 | 你想改… | 改这个文件 |
 |---|---|
-| 分镜怎么排、必填哪些字段 | `skills/skill_storyboard/skill_storyboard.md` |
-| 怎么保证角色不变脸 | `skills/skill_entity_consistency/skill_entity_consistency.md` |
-| 写画面 prompt 的句式、禁忌词 | `skills/skill_prompt_engineering/skill_prompt_engineering.md` |
-| 多段视频怎么链式承接 | `skills/skill_video_chain/skill_video_chain.md` |
-| **九宫格关键帧并行出片** | `skills/skill_storyboard_grid/skill_storyboard_grid.md` |
-| 审片问什么、什么算不过 | `skills/skill_director_vlm/skill_director_vlm.md` |
-| BGM/配音怎么做 | `skills/skill_audio/skill_audio.md` |
-| 串行还是并行、怎么控预算 | `skills/skill_async_schedule/skill_async_schedule.md` |
-| AI 什么时候该自己拿主意、什么时候问你 | `skills/skill_self_decision/skill_self_decision.md` |
+| 分镜怎么排、必填哪些字段 | `skills/skill_storyboard/SKILL.md` |
+| 怎么保证角色不变脸 | `skills/skill_entity_consistency/SKILL.md` |
+| 写画面 prompt 的句式、禁忌词 | `skills/skill_prompt_engineering/SKILL.md` |
+| 多段视频怎么链式承接 | `skills/skill_video_chain/SKILL.md` |
+| **九宫格关键帧并行出片** | `skills/skill_storyboard_grid/SKILL.md` |
+| 审片问什么、什么算不过 | `skills/skill_director_vlm/SKILL.md` |
+| BGM/配音怎么做 | `skills/skill_audio/SKILL.md` |
+| 串行还是并行、怎么控预算 | `skills/skill_async_schedule/SKILL.md` |
+| AI 什么时候该自己拿主意、什么时候问你 | `skills/skill_self_decision/SKILL.md` |
 
-**加一个全新技能**：在 `skills/` 下新建一个文件夹 `skill_你的名字/`，里面放两个文件：
-- `description.md`：第一行用一句话写"什么时候该用我"（这句话会自动出现在 AI 的技能菜单里）
-- `skill_你的名字.md`：详细做法
+**加一个全新技能**：在 `skills/` 下新建一个文件夹 `skill_你的名字/`，里面放一个 `SKILL.md`（对齐 Anthropic Agent Skills 标准）：
+- 文件顶部用 `---` 包一段 YAML：`name`（小写连字符，如 `skill-你的名字`）+ `description`（一句话写清"这个技能干什么 + 什么时候该用"，这段会自动出现在 AI 的技能菜单里驱动触发）
+- `---` 下面写详细做法正文
 
-建好就自动生效，AI 下次开机就知道多了这个技能。**不用改任何代码。**
+建好就自动生效，AI 下次开机就知道多了这个技能。**不用改任何代码。**（脚本、参考资料、素材可选放进同目录的 `scripts/` `references/` `assets/`，没有就不用建。）
 
 ### 第 2 层：底线规则（system prompt）——"什么绝对不许干"
 
@@ -127,7 +124,7 @@
 ## 四、举个例子：我想让它默认都用九宫格
 
 1. 它**已经有**这个技能了 → `skills/skill_storyboard_grid/`，你直接说"用九宫格做"它就会读。
-2. 想让它**默认**（不用每次都说）→ 改 `skills/skill_self_decision/skill_self_decision.md`，加一句"多镜头默认走九宫格并行，只有武打/长镜头连续运动的片子才改用链式承接"。
+2. 想让它**默认**（不用每次都说）→ 改 `skills/skill_self_decision/SKILL.md`，加一句"多镜头默认走九宫格并行，只有武打/长镜头连续运动的片子才改用链式承接"。
 3. 不用碰 system，不用碰代码，下次对话生效。
 
 > 注：九宫格适合"镜头之间是切换"的片子（广告/MV/产品）。**武打、追逐这种讲究连续动作的，反而该走链式承接**——这条判断就写在上面第 2 步那个文件里。

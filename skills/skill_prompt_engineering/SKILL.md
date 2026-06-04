@@ -1,8 +1,13 @@
+---
+name: skill-prompt-engineering
+description: 做视频/短片/广告/MV/九宫格全程，**任何一次 gen_image / gen_video_t2v / gen_audio_bgm 调用前都必须先读我**（调用前最后一道关，无一例外）。我是调用前最后 30 秒 checklist：检查 prompt 文本本身、参数合法性（如 Seedance duration 只接受合法档位）、并留下痕迹可查的调用记录。不读我直接裸调 = prompt 凭直觉脑补 + 参数踩雷。
+---
+
 # Skill · Prompt Engineering（调用前最后 30 秒 checklist）
 
-> **何时读我**：**每次** `gen_image` / `gen_video_t2v` / `entity_add_view` 调用之前——**调用前最后一道关**。
-> 这一道是"prompt 文本检查"，不是"分镜结构想清楚"——后者去 [skill_storyboard.md](../skill_storyboard/skill_storyboard.md)。
-> **来源**：火山官方《Seedance 2.0 R2V FAQ V1.7》第一/二/三/四章 + 本项目踩坑（篮球项目 BGM 漏出 / 环保广告 entity 跳过 case）。
+> **何时读我**：**每次** `gen_image` / `gen_video_t2v` 调用之前——**调用前最后一道关**。
+> 这一道是"prompt 文本检查"，不是"分镜结构想清楚"——后者去 [skill_storyboard.md](../skill_storyboard/SKILL.md)。
+> **来源**：火山官方《Seedance 2.0 R2V FAQ V1.7》第一/二/三/四章 + 本项目踩坑（篮球项目 BGM 漏出 / 环保广告跳过参考图 case）。
 
 ---
 
@@ -12,10 +17,10 @@
 
 | # | 死罪 | 反例（来自 p20260531_140047_） | 正确做法 |
 |---|---|---|---|
-| 1 | **跳过 entity-first** | `reference_entities=[]` + 文字描述"30多岁穿灰色外套" | 先 `entity_register` + `entity_add_view` 出齐 view + vlm 全审过，再 `gen_video_t2v` 时 `reference_entities=["man","bottle","scene"]` |
+| 1 | **跳过参考图先行** | `reference_images=[]` + 文字描述"30多岁穿灰色外套" | 先用 `gen_image` 把角色/道具/场景参考图出齐 + vlm 全审过，再 `gen_video_t2v` 时 `reference_images=["<man_url>","<bottle_url>","<scene_url>"]` |
 | 2 | **BGM 双闸门一个不开** | `generate_audio=True` + prompt 没有"无背景音乐" | 默认 `generate_audio=False`（闸门 1）；非要开就在 prompt 末尾加禁令句（闸门 2） |
 | 3 | **prompt 复述工具参数** | `参考已有的角色...生成视频` 当开头 | 直接以 `将<图片1>中的...定义为<主体1>` 开头，工具会自动注入 ref_image_url |
-| 4 | **shot prompt 修补 entity 缺陷** | review 说"短裤有白纹"，下轮 prompt 加"无白色条纹" | 回去重做 `entity_add_view` 把基准图改干净，再重做 shot |
+| 4 | **shot prompt 修补参考图缺陷** | review 说"短裤有白纹"，下轮 prompt 加"无白色条纹" | 回去用 `gen_image` 把参考图改干净，再重做 shot |
 | 5 | **「张嘴无声」哑剧** ⭐2026-06-01 新增 | prompt 写「老奶奶**夸奖**小女孩」`generate_audio=True` 但没 `{}` 台词 → 模型出口型不出声 | 写「夸奖/说/告诉/讲/喊」等口型语义词时**必须**补 `{台词文本}`；不想要台词就把动作改成「咧嘴笑」纯表情 |
 
 任一条命中 → **不许调 Seedance/Seedream**，先回去改流程或改 prompt。
@@ -38,7 +43,7 @@
 任意一条不过 → **不许调 Seedance/Seedream**，先改 prompt。
 
 > ⭐ **痕迹可查铁律** ⭐
-> 每个 project 在第一次出 prompt（`gen_video_t2v` / `gen_image` / `entity_add_view` / `gen_audio_bgm`）之前，**必须**有一条 `file_read("skills/skill_prompt_engineering/skill_prompt_engineering.md")` 落到 `logs/tool_calls.jsonl` 里。如果 tool_calls.jsonl 一条 `file_read` 都没有就直接出片 —— 等于"心里走过 7 步"自欺欺人，**视为违规**。
+> 每个 project 在第一次出 prompt（`gen_video_t2v` / `gen_image` / `gen_audio_bgm`）之前，**必须**有一条 `file_read("skills/skill_prompt_engineering/SKILL.md")` 落到 `logs/tool_calls.jsonl` 里。如果 tool_calls.jsonl 一条 `file_read` 都没有就直接出片 —— 等于"心里走过 7 步"自欺欺人，**视为违规**。
 > - 已踩坑①：p20260601_133747_ 跳舞项目 整个工具调用日志没有一条 file_read，PE 7 步形同虚设。
 > - 已踩坑②：p20260601_172203_ 跳舞 20s 项目 同样 0 条 file_read，s01 prompt 只有"20岁亚裔女孩在舞蹈室跳活力爵士舞，手臂随节奏摆动"一句，没写"画面唯一主角，禁止镜中倒影出现复刻分身"这种第 7 步反例避坑句，结果生成多人物镜头。
 > - ⭐ **第 7 步「反例扫描」必须把命中的死罪反例原文复制到 prompt 末尾**，不是"心里默念过了"。任何有人物的镜头，prompt 末尾必带"画面中唯一主角，禁止出现第二个人形/路人/镜中复刻分身"这类显式禁令句。
@@ -184,7 +189,7 @@ Seedance 靠括号识别音频意图——**不写括号 = 模型自己猜，靠
 | `duration` | ✅ 必传 | ✅ **要**复述 `时长：N秒` | 火山官方建议双保险（V-2） |
 | `ratio` | ✅ 必传 | ✅ **要**复述 `比例：H:W` | 同上 |
 | `generate_audio` | ✅ 工具决定 | ❌ **不要**写 `开启音频` 之类 | 这是开关，不是描述 |
-| `reference_entities` | ✅ 工具决定 | ❌ **不要**写"参考已有的角色 X、道具 Y、场景 Z" | 工具会自动注入 ref_image_url，prompt 复述等于多余 |
+| `reference_images` | ✅ 工具决定 | ❌ **不要**写"参考已有的角色 X、道具 Y、场景 Z" | 工具会自动注入 ref_image_url，prompt 复述等于多余 |
 | `reference_video_url` | ✅ 工具决定 | ❌ **不要**写"参考视频1" | 同上，且编辑/延长任务还会被识别成"参考任务"导致语义错乱 |
 | `name` / `task_id` | ✅ 工具决定 | ❌ 完全不该出现 | 这是工程标识，跟模型无关 |
 
@@ -222,7 +227,7 @@ Seedance 靠括号识别音频意图——**不写括号 = 模型自己猜，靠
 | `（古风琴音）<夜风>` | `<指尖拨动琴弦的清音><夜风>` | （）BGM 禁用，改写为环境音效 |
 | **`参考已有的角色little_boy、道具basketball、场景outdoor_basketball_court生成视频`** | （直接删掉这句开头） | ⭐ 工具已经注入 ref_image_url，prompt 复述纯属冗余且会跟"任务类型句式"打架 |
 | **`...仅保留环境音效与人物对白`（但镜头里没有对白）** | `...仅保留环境音效` | 别照搬模板，按当前 shot 实际有没有对白决定 |
-| **shot prompt 里写"无任何白色条纹"修补 entity 缺陷** | 回去重做 `entity_add_view` 把基准图改干净 | 工具自动注入的 ref_image 跟你的反向 prompt 打架，模型乱画 |
+| **shot prompt 里写"无任何白色条纹"修补参考图缺陷** | 回去用 `gen_image` 把参考图改干净 | 工具自动注入的 ref_image 跟你的反向 prompt 打架，模型乱画 |
 | 仅传一张混合人脸+全身的图当人物参考 | 大头照 + 全身照分开传（V-1） | ID 漂移 |
 | 多视图 / 三视图当人物参考 | 大头照 + 全身照足够（V-7 双胞胎） | 三视图易触发双胞胎 |
 
@@ -265,7 +270,7 @@ Seedance 靠括号识别音频意图——**不写括号 = 模型自己猜，靠
 
 ## 何时跳过 PE checklist
 
-- **`entity_add_view` 出基准图**：图编辑模式，prompt 短小直白即可，不需要走 7 步
+- **`gen_image` 出主体参考图（图编辑模式）**：prompt 短小直白即可，不需要走 7 步
 - **A-4 MV 模式**：BGM 是项目核心，不要写"无背景音乐"禁令
 - **debug 抽帧 / 工具调用**：不调模型，无关
 
@@ -276,13 +281,13 @@ Seedance 靠括号识别音频意图——**不写括号 = 模型自己猜，靠
 ## 速查决策树
 
 ```
-要调 gen_video_t2v / gen_image / entity_add_view
+要调 gen_video_t2v / gen_image
 │
-├── 是 entity_add_view（出基准图）
+├── 是 gen_image 出主体参考图（图编辑模式）
 │   └── 短 prompt 直接发
 │
 ├── 是 MV 模式（A-4）
-│   └── 走 [skill_audio.md](../skill_audio/skill_audio.md) A-4 章节，跳过 BGM 禁令
+│   └── 走 [skill_audio.md](../skill_audio/SKILL.md) A-4 章节，跳过 BGM 禁令
 │
 └── 其他所有视频生成
     └── 7 步 checklist：

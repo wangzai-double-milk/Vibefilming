@@ -1,3 +1,8 @@
+---
+name: skill-async-schedule
+description: 要批量出图/出视频、要决定串行还是并行、预算紧张时。 异步任务提交+轮询的调度策略，决定串行/并行，控制预算与等待。
+---
+
 # Skill · 异步任务 + 调度策略（Async & Scheduling）
 
 > **何时读我**：要批量出图/出视频时；要决定串行还是并行时；预算紧张时。
@@ -29,7 +34,7 @@
 > 1. 上一段不出 mp4 不能提交下一段
 > 2. **上一段不过 vlm 检查不许提交下一段**，否则崩坏会累积传染
 
-详细链式打法见 [skill_video_chain.md](../skill_video_chain/skill_video_chain.md)。
+详细链式打法见 [skill_video_chain.md](../skill_video_chain/SKILL.md)。
 
 ---
 
@@ -57,10 +62,3 @@
 - `content_violation`（敏感词）→ 改词；连续 2 次还过不去 → ask_user
 - `rate_limit` → 等 60s 后重试
 - 其他报错 → 直接告知用户
-
----
-
-## sleep 工具的边界
-
-`sleep(seconds)` 上限 120s，**几乎用不上** —— `query_video_task` 已经阻塞等。
-仅当需要给外部任务留时间（如手动等用户操作）时使用。

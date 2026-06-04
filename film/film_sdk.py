@@ -129,8 +129,9 @@ def doubao_chat(messages: list, max_tokens: int = 4096, temperature: float = 0.7
 
 
 def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
-               temperature: float = 0.1) -> dict:
-    """Doubao VLM。image_paths 是本地 jpg/png 列表，会 base64 内嵌。"""
+               temperature: float = 0.1, system: Optional[str] = None) -> dict:
+    """Doubao VLM。image_paths 是本地 jpg/png 列表，会 base64 内嵌。
+    system: 可选系统提示（设定 VLM 的角色/输出格式）。"""
     image_msgs = []
     for p in image_paths:
         b64 = base64.b64encode(Path(p).read_bytes()).decode()
@@ -138,16 +139,23 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
         })
-    return doubao_chat([{
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({
         "role": "user",
         "content": image_msgs + [{"type": "text", "text": text}],
-    }], max_tokens=max_tokens, temperature=temperature, model=MODEL_VLM)
+    })
+    return doubao_chat(messages, max_tokens=max_tokens,
+                       temperature=temperature, model=MODEL_VLM)
 
 
 def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
-                            temperature: float = 0.1, fps: float = 1.0) -> dict:
+                            temperature: float = 0.1, fps: float = 1.0,
+                            system: Optional[str] = None) -> dict:
     """Doubao Seed 2.0 pro 直接理解视频（不抽帧）。
     video 可以是本地路径（自动 base64）或 https URL（直接传）。
+    system: 可选系统提示（设定 VLM 的角色/输出格式）。
     """
     if video.startswith(("http://", "https://")):
         video_url = video
@@ -155,24 +163,36 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
         b64 = base64.b64encode(Path(video).read_bytes()).decode()
         suffix = Path(video).suffix.lower().lstrip(".") or "mp4"
         video_url = f"data:video/{suffix};base64,{b64}"
-    return doubao_chat([{
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({
         "role": "user",
         "content": [
             {"type": "video_url", "video_url": {"url": video_url, "fps": fps}},
             {"type": "text", "text": text},
         ],
-    }], max_tokens=max_tokens, temperature=temperature, model=MODEL_VLM)
+    })
+    return doubao_chat(messages, max_tokens=max_tokens,
+                       temperature=temperature, model=MODEL_VLM)
 
 
 # ============== Seedream（文生图 / 图编辑统一接口）==============
-def gen_image(prompt: str, save_path: Path, ref_image_url: Optional[str] = None,
-              size: str = "1024x1024") -> dict:
-    """Seedream 4.0 — 给 ref_image_url 即变图编辑模式。返回 {url, path, raw}"""
+def gen_image(prompt: str, save_path: Path,
+              ref_image_url=None,
+              size: str = "1024x1024",
+              watermark: bool = False) -> dict:
+    """Seedream 4.0 — 文生图 / 图编辑 / 多图融合。返回 {url, path, raw}。
+
+    ref_image_url: None=文生图；str=单图编辑；list[str]=多图融合（最多 14 张）。
+    watermark: 是否加「AI 生成」水印（官方默认 true，本 SDK 默认 false）。
+    """
     body = {
         "model": MODEL_IMG,
         "prompt": prompt,
         "size": size,
         "response_format": "url",
+        "watermark": watermark,
         "n": 1,
     }
     if ref_image_url:
@@ -190,7 +210,9 @@ def submit_video_task(prompt: str,
                       duration: Optional[int] = None,
                       generate_audio: bool = False,
                       resolution: str = "720p",
-                      ratio: str = "16:9") -> dict:
+                      ratio: str = "16:9",
+                      seed: Optional[int] = None,
+                      camera_fixed: Optional[bool] = None) -> dict:
     """提交 Seedance 任务（**仅多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
 
     本 SDK 已经统一只走「t2v + 多模态参考」一条路径——这是官方做精良
@@ -232,6 +254,10 @@ def submit_video_task(prompt: str,
         body["duration"] = int(duration)
     if generate_audio:
         body["generate_audio"] = True
+    if seed is not None:
+        body["seed"] = int(seed)
+    if camera_fixed is not None:
+        body["camera_fixed"] = bool(camera_fixed)
     raw = _http_post(f"{get_ark_base()}/contents/generations/tasks", body)
     return {"task_id": raw.get("id"), "model": MODEL_VIDEO, "raw": raw}
 
@@ -299,35 +325,39 @@ def video_concat(clips: list, save_path: Path) -> dict:
 
 
 def video_crossfade(clip_a: str, clip_b: str, save_path: Path,
-                    duration: float = 1.0, offset: float = 4.0) -> dict:
-    """A/B 两段做交叉溶解（视频 xfade + 音频 acrossfade）。"""
+                    duration: float = 1.0, offset: float = 4.0,
+                    transition: str = "fade", preset: str = "ultrafast") -> dict:
+    """A/B 两段做转场（视频 xfade + 音频 acrossfade）。
+    transition: xfade 转场类型（fade/wipeleft/slideup/circleopen/dissolve 等，见 ffmpeg xfade 文档）。"""
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     _run_ffmpeg([
         "-i", str(clip_a), "-i", str(clip_b),
         "-filter_complex",
-        f"[0:v][1:v]xfade=transition=fade:duration={duration}:offset={offset}[v];"
+        f"[0:v][1:v]xfade=transition={transition}:duration={duration}:offset={offset}[v];"
         f"[0:a][1:a]acrossfade=d={duration}[a]",
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:v", "libx264", "-preset", preset,
         str(save_path),
     ])
     return {"path": str(save_path)}
 
 
-def video_trim(clip: str, save_path: Path, start: float, end: float) -> dict:
+def video_trim(clip: str, save_path: Path, start: float, end: float,
+               preset: str = "ultrafast") -> dict:
     """截取 [start, end] 秒。"""
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     _run_ffmpeg([
         "-ss", str(start), "-to", str(end), "-i", str(clip),
-        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+        "-c:v", "libx264", "-preset", preset, "-c:a", "aac",
         str(save_path),
     ])
     return {"path": str(save_path)}
 
 
-def video_speed(clip: str, save_path: Path, factor: float) -> dict:
+def video_speed(clip: str, save_path: Path, factor: float,
+                preset: str = "ultrafast") -> dict:
     """变速。factor=2 即 2 倍速；0.5 即 0.5 倍速。视频音频同步。"""
     if factor <= 0:
         raise ValueError("factor 必须 > 0")
@@ -347,7 +377,7 @@ def video_speed(clip: str, save_path: Path, factor: float) -> dict:
         "-filter_complex",
         f"[0:v]setpts={pts}*PTS[v];[0:a]{','.join(tempos)}[a]",
         "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:v", "libx264", "-preset", preset,
         str(save_path),
     ])
     return {"path": str(save_path)}
@@ -355,7 +385,7 @@ def video_speed(clip: str, save_path: Path, factor: float) -> dict:
 
 def video_overlay(base: str, pip: str, save_path: Path,
                   pip_scale: float = 0.33, position: str = "br",
-                  margin: int = 20) -> dict:
+                  margin: int = 20, preset: str = "ultrafast") -> dict:
     """画中画。position ∈ tl/tr/bl/br。"""
     pos_map = {
         "tl": f"{margin}:{margin}",
@@ -371,14 +401,15 @@ def video_overlay(base: str, pip: str, save_path: Path,
         "-filter_complex",
         f"[1:v]scale=iw*{pip_scale}:ih*{pip_scale}[p];[0:v][p]overlay={pos}[v]",
         "-map", "[v]", "-map", "0:a?",
-        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy",
+        "-c:v", "libx264", "-preset", preset, "-c:a", "copy",
         str(save_path),
     ])
     return {"path": str(save_path)}
 
 
 def video_fade(clip: str, save_path: Path, fade_in: float = 0.5,
-               fade_out: float = 0.5, total_duration: Optional[float] = None) -> dict:
+               fade_out: float = 0.5, total_duration: Optional[float] = None,
+               preset: str = "ultrafast") -> dict:
     """头尾黑场。total_duration 不传时尝试用 ffprobe 探测。"""
     if total_duration is None:
         total_duration = probe_duration(clip)
@@ -391,21 +422,22 @@ def video_fade(clip: str, save_path: Path, fade_in: float = 0.5,
         f"fade=t=in:st=0:d={fade_in},fade=t=out:st={fade_out_start}:d={fade_out}",
         "-af",
         f"afade=t=in:st=0:d={fade_in},afade=t=out:st={fade_out_start}:d={fade_out}",
-        "-c:v", "libx264", "-preset", "ultrafast",
+        "-c:v", "libx264", "-preset", preset,
         str(save_path),
     ])
     return {"path": str(save_path)}
 
 
 def video_portrait(clip: str, save_path: Path,
-                   width: int = 720, height: int = 1280) -> dict:
+                   width: int = 720, height: int = 1280,
+                   preset: str = "ultrafast") -> dict:
     """横转竖：居中裁剪 + 缩放。"""
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     _run_ffmpeg([
         "-i", str(clip),
         "-vf", f"crop=ih*{width}/{height}:ih,scale={width}:{height},setsar=1",
-        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy",
+        "-c:v", "libx264", "-preset", preset, "-c:a", "copy",
         str(save_path),
     ])
     return {"path": str(save_path)}

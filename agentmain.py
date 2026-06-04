@@ -22,6 +22,16 @@ def load_tool_schema(suffix=''):
         suffix = '_film'
     TS = open(os.path.join(script_dir, f'assets/tools_schema{suffix}.json'), 'r', encoding='utf-8').read()
     TOOLS_SCHEMA = json.loads(TS if os.name == 'nt' else TS.replace('powershell', 'bash'))
+    # film 模式：并入用 @film_tool 装饰器声明的工具 schema（自动生成，无需手写 JSON）
+    if suffix == '_film':
+        try:
+            from film.tools import build_film_schema
+            existing = {t.get('function', {}).get('name') for t in TOOLS_SCHEMA}
+            for s in build_film_schema():
+                if s.get('function', {}).get('name') not in existing:
+                    TOOLS_SCHEMA.append(s)
+        except Exception as e:
+            print(f'[WARN] film 装饰器 schema 合并失败: {e}')
 load_tool_schema()
 
 lang_suffix = '_en' if os.environ.get('GA_LANG', '') == 'en' else ''
@@ -40,32 +50,64 @@ if not os.path.exists(cdp_cfg):
         open(cdp_cfg, 'w', encoding='utf-8').write(f"const TID = '__ljq_{hex(random.randint(0, 99999999))[2:8]}';")
     except Exception as e: print(f'[WARN] CDP config init failed: {e} — advanced web features (tmwebdriver) will be unavailable.')
 
+def _parse_frontmatter_description(text):
+    """从 SKILL.md 顶部 YAML frontmatter（--- 包裹）里抽 description 字段。
+    遵循 Anthropic Agent Skills 标准：description 写明「这个 skill 干什么 + 什么时候用」。
+    解析不到返回 None。"""
+    if not text.startswith('---'):
+        return None
+    end = text.find('\n---', 3)
+    if end == -1:
+        return None
+    fm = text[3:end]
+    desc_lines, capturing = [], False
+    for line in fm.splitlines():
+        if not capturing:
+            m = re.match(r'\s*description\s*:\s*(.*)$', line)
+            if m:
+                capturing = True
+                first = m.group(1).strip().strip('"\'')
+                if first:
+                    desc_lines.append(first)
+            continue
+        # 已在 description 块：遇到下一个顶格 key 则停止，否则当作折行续接
+        if re.match(r'^[A-Za-z_][\w-]*\s*:', line):
+            break
+        if line.strip():
+            desc_lines.append(line.strip())
+    return ' '.join(desc_lines).strip() or None
+
+
 def build_skills_index():
-    """扫 skills/*/description.md，自动生成 skill 路由表。
-    每个 film skill 是一个文件夹 skills/<name>/，里面放：
-      - description.md：一两句话说明「这个 skill 管什么、什么时候读」（进开机索引）
-      - <name>.md：详细做法正文（agent 按需 file_read）
-    建一个带 description.md 的文件夹即被自动收录，无需改 sys_prompt。
-    没有 description.md 的目录/文件自动跳过（纯 SOP 文档、脚本、skill_search 等）。"""
+    """扫 skills/*/SKILL.md 自动生成 skill 路由表（Anthropic Agent Skills 标准）。
+    每个 skill 是一个文件夹 skills/<name>/，里面放一个 SKILL.md：
+      - 顶部 YAML frontmatter 的 description 字段写明「干什么 + 什么时候用」（进开机索引）
+      - --- 下面是详细做法正文（agent 按需 file_read）
+    建一个带合规 SKILL.md 的文件夹即被自动收录，无需改 sys_prompt。
+    没有 SKILL.md 或解析不到 description 的目录自动跳过（纯 SOP 文档、脚本、skill_search 等）。"""
     import glob
     skills_dir = os.path.join(script_dir, 'skills')
     rows = []
-    for desc_fp in sorted(glob.glob(os.path.join(skills_dir, '*', 'description.md'))):
-        name = os.path.basename(os.path.dirname(desc_fp))
+    for skill_fp in sorted(glob.glob(os.path.join(skills_dir, '*', 'SKILL.md'))):
+        name = os.path.basename(os.path.dirname(skill_fp))
         try:
-            with open(desc_fp, 'r', encoding='utf-8') as f:
-                desc = f.read().strip()
+            with open(skill_fp, 'r', encoding='utf-8') as f:
+                trigger = _parse_frontmatter_description(f.read())
         except Exception:
             continue
-        if not desc:
+        if not trigger:
             continue
-        # 取首行做「什么时候读」的触发说明，正文路径默认指向同名 .md
-        trigger = desc.splitlines()[0].strip()
-        body = f"skills/{name}/{name}.md"
-        rows.append(f"| {trigger} | `{body}` |")
+        # 单行命令清单格式：触发条件在前、命令在后，命令前用 → 显式分隔
+        # 不用 markdown 表格——之前实测 agent 会把表格里 `skills/xxx/SKILL.md` 截成 `SKILL.md` 调用失败
+        # 用绝对路径——agent 的 file_read cwd 是 temp/，相对路径 skills/... 会被解析成 temp/skills/... 404
+        abs_fp = os.path.join(skills_dir, name, 'SKILL.md')
+        rows.append(f"- **触发**：{trigger}\n  **立即执行** → `file_read path=\"{abs_fp}\"`")
     if not rows:
         return ''
-    header = "| 你正在做 | 必读 skill |\n|---|---|\n"
+    header = (
+        "⛔ **路径完整性铁律**：下列每条 `file_read` 命令的 path 参数必须**逐字符完整复制**（含完整绝对路径），"
+        "**严禁**简写成 `SKILL.md`、`./SKILL.md` 或任何省略前缀的形式——整个路径是不可分割的整体，少一段就读不到文件。\n\n"
+    )
     return header + "\n".join(rows)
 
 
@@ -88,7 +130,7 @@ def build_tools_index():
             film_tools.append(f"- `{name}` — {brief}")
         else:
             ga_tools.append(f"`{name}`")
-    out = "**影视专属工具**（真相源 → `film/tools.py` + 事实参考卡 `skills/film_facts.md`）：\n"
+    out = "**影视专属工具**（真相源 → `film/tools.py`）：\n"
     out += "\n".join(film_tools)
     if ga_tools:
         out += "\n\n**GA 通用工具**：" + " / ".join(ga_tools)

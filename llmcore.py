@@ -891,6 +891,31 @@ def _write_llm_log(label, content, log_path=None):
     with open(log_path, 'a', encoding='utf-8', errors='replace') as f:
         f.write(f"=== {label} === {ts}\n{content}\n\n")
 
+
+def _dump_full_context(turn, system, tools, history, current_msg, log_path=None):
+    """每轮 dump agent 看到的完整上下文：system + tools + 全量 history + 本轮输入。
+    每个 TURN 块自包含，便于逐轮复盘 agent 到底看了什么。"""
+    if not log_path:
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f'temp/model_responses/model_responses_{os.getpid()}.txt')
+    os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    def _j(o):
+        try: return json.dumps(o, ensure_ascii=False, indent=2, default=str)
+        except Exception: return str(o)
+    tool_names = []
+    for t in (tools or []):
+        fn = t.get('function', {}) if isinstance(t, dict) else {}
+        if fn.get('name'): tool_names.append(fn['name'])
+    parts = [
+        f"\n{'#'*30} TURN {turn} {'#'*30} {ts}",
+        f"\n----- [SYSTEM PROMPT] ({len(system or '')} chars) -----\n{system or '(empty)'}",
+        f"\n----- [TOOLS] ({len(tool_names)} 个: {', '.join(tool_names)}) -----\n{_j(tools)}",
+        f"\n----- [HISTORY] ({len(history or [])} 条消息) -----\n{_j(history)}",
+        f"\n----- [本轮新输入 THIS TURN INPUT] -----\n{_j(current_msg)}",
+    ]
+    with open(log_path, 'a', encoding='utf-8', errors='replace') as f:
+        f.write("\n".join(parts) + "\n\n")
+
 def tryparse(json_str):
     try: return json.loads(json_str)
     except: pass
@@ -1013,13 +1038,23 @@ class NativeToolClient:
         final_content = tool_result_blocks + filtered_content
         if not final_content: final_content = [{"type": "text", "text": "."}]
         merged = {"role": "user", "content": final_content}
+        self._turn = getattr(self, '_turn', 0) + 1
+        # temp 默认日志：保持原版简洁格式（只记本轮输入）
         _write_llm_log('Prompt', json.dumps(merged, ensure_ascii=False, indent=2), self.log_path)
+        # 项目完整 trace：每轮 dump 全量上下文（system+tools+history+本轮），仅当已重定向到项目目录
+        trace_path = getattr(self, 'trace_path', None)
+        if trace_path:
+            _dump_full_context(self._turn, self.backend.system, self.backend.tools,
+                               self.backend.history, merged, trace_path)
         gen = self.backend.ask(merged)
         try:
             while True: 
                 chunk = next(gen); yield chunk
         except StopIteration as e: resp = e.value
-        if resp: _write_llm_log('Response', resp.raw, self.log_path)
+        if resp:
+            _write_llm_log('Response', resp.raw, self.log_path)
+            if trace_path:
+                _write_llm_log(f'Response (TURN {self._turn})', resp.raw, trace_path)
         if resp and hasattr(resp, 'tool_calls') and resp.tool_calls: self._pending_tool_ids = [tc.id for tc in resp.tool_calls]
         return resp
 
