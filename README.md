@@ -7,11 +7,13 @@
 **你只管说一句话——「给我做个 30 秒校园霸凌警示公益片」**
 **它做：分镜 → 出图 → 出视频 → VLM 审片 → 拼片 → 配 BGM → 交付**
 
-*基于 [GenericAgent](https://github.com/JinyiHan99/GA-Technical-Report) 框架 · ARK + BigMusic 双引擎 · 全流程自主决策*
+*能自主决策的 AI 导演 · 分层架构（内核 + 技能库）· 自审重做 + 越拍越聪明 · ARK + BigMusic 双引擎*
+
+<sub>没有写死的工作流——它自己判断怎么拍、自己审片不行就重做、把每次踩的坑沉淀成能力。脑子越用越好使。</sub>
 
 ---
 
-🎨 Seedream 4.0 出图　🎬 Seedance 2.0 出视频　👁️ Seed 2.0 当导演审片　🎵 BigMusic 自主配乐
+🎨 Seedream 4.5 出图　🎬 Seedance 2.0 出视频　👁️ Seed 2.0 当导演审片　🎵 BigMusic 自主配乐
 
 </div>
 
@@ -37,8 +39,14 @@
 
 ## 🔥 凭什么它能"自主"？
 
-我们没用任何工作流编排框架。整套系统就一个 **GA 主循环 + 36 个原子工具 + 一堆经验文档**。
-让 agent 自己变聪明的核心是这三件事：
+**关键不在工具多，而在架构——我们没用任何写死的工作流编排，而是把"决策"和"知识"分开放：**
+
+- **决策内核**：一个能调工具、会循环、能自审、能记账的 agent 主循环——它负责"想下一步该干嘛"，但流程不钉死，可以根据审片反馈随时跳回重做 / 换思路。
+- **技能库（`skills/` + sys_prompt 铁律 + `film` 工具）**：把"怎么当导演拍片"的全部 know-how 沉淀成一篇篇 `SKILL.md`，内核按需读取、自己判断该用哪条。
+
+> **内核负责"判断"，技能库负责"经验"。** 没有流程图、没有 if-else 编排——agent 自己读经验、自己拿主意。**改拍法 = 改 md，不碰一行代码。**
+
+这套架构让它真的像个导演而非流水线，靠的是下面三件事：
 
 ### 1. 「导演式自审」 —— 每个产物 VLM 当导演审一眼
 
@@ -72,6 +80,31 @@
 | 开音轨场景 | 必须出原生对白唇形时才开 `generate_audio=True`，并在 prompt 末尾追加"无背景音乐，仅保留环境音效与人物对白" |
 
 **整片 BGM 的唯一入口** = 流水线最后一步的 `gen_audio_bgm`（火山 BigMusic GenBGM v5.0），由 agent 自主判断要不要配 + 配什么风格。
+
+---
+
+## 📈 它会越用越聪明（自我进化）
+
+它不是每次从零开始——拍过的片、踩过的坑会**沉淀下来反哺下一次**。进化靠两条线：
+
+### 1. 分层记忆：拍完一次，长一次记性
+
+任务收尾时 agent 调 `start_long_term_update`，把这次**验证成功**的经验蒸馏进一套四层记忆：
+
+```
+L1 极简索引（≤30 行，场景关键词→定位）
+L2 全局事实库（路径 / 凭证 / 配置等环境事实）
+L3 任务级 SOP（特定任务的隐藏前置 + 典型坑）
+L4 历史会话（原始上下文，可回溯）
+```
+
+> 铁律 **「No Execution, No Memory」**——只有真正跑通的工具结果才准进记忆，杜绝把模型的猜测当事实写进去。决策前先查记忆、反复失败回看 SOP，于是同一个坑不会踩第二次。
+
+### 2. 技能库踩坑沉淀：把"翻过的车"写进剧本
+
+每个 `SKILL.md` 里都挂着真实的 **「已踩坑」案例**（带项目 id，如 `p20260601_133747_ 跳舞项目`：成片命名含糊导致跳过 BGM 直接交付）。失败现场 → 复盘 → 写进对应 skill → 下次开机自动加载，从此规避。
+
+> 这意味着**进化是开放的**：你（导演）或 agent 发现新坑，只要在 `skills/` 下新建一个文件夹 + `SKILL.md`（YAML frontmatter 写 `name` + `description`），**0 代码、下次对话即生效**——能力库越用越厚。
 
 ---
 
@@ -132,9 +165,9 @@ python3 agentmain.py
 你的 brief
     ↓
 [阶段 1] 规划镜头（agent 自己拍板）
-         └─ 两种路线二选一：
-            · 结构化分镜（file_write 写 storyboard.json）→ 链式承接，连贯性强
-            · 九宫格关键帧（skill_storyboard_grid）→ 关键帧并行，速度快
+         └─ 先 file_write 写 storyboard.json，再按片子类型选出片路线（skill_storyboard）：
+            · 链式承接（连续动作/长镜头）→ 串行，连贯性强
+            · 关键帧并行（镜头切换型）→ 图/视频并行提交，速度快
     ↓
 [阶段 2] 用 gen_image 出角色/道具/场景的参考图
          └─ 每张参考图必过 vlm_understand（导演审片），记住「主体名 → url」
@@ -191,9 +224,11 @@ projects/<project_id>/
 
 ## 🧠 设计原则
 
+- **决策 / 知识分层**："想下一步干嘛"的决策内核与"怎么拍片"的技能库彻底解耦——内核只管判断与循环，影视 know-how 全压进 `skills/` + sys_prompt + `film` 工具，互不污染
+- **自主判断，流程不钉死**：没有"必须 P1→P2→P3"的硬编排，agent 自己读经验、自己拿主意，根据 review 反馈随时跳回重做 / 跳过 / 换思路
+- **越用越聪明**：拍完蒸馏进分层记忆、踩坑写回 skill，下次开机自动加载——同一个坑不踩第二次（详见上文「自我进化」）
 - **导演视角自审**：VLM 不打分、不列维度、不写 QA 报告，按导演审美发散性评判
 - **VLM ≠ PE 工程师**：VLM 只出"问题诊断+想要的样子"，agent 走 PE 7 步翻译成工程化 prompt
-- **流程不钉死**：没有"必须 P1→P2→P3"的硬流程，agent 根据 review 反馈自己跳回重做 / 跳过 / 换思路
 - **工具纯原子 + 文档层经验沉淀**：tool 只做纯 API 调用（不夹业务判断/编排 hint）；所有方法论、纪律、流程编排都沉淀进 skill md，由 agent 自觉遵守
 - **铁律 = 状态底线，不规定路线**：sys_prompt 只说"必须达到什么状态"（不偷砍 / 主体过审 / 产物过审 / 不脑补），不绑工具名/格式；**怎么实现是 skill 的事**——这样新增/替换实现路线（如九宫格并行）0 改 system 即可生效
 - **加 skill 0 代码生效**：在 `skills/` 下新建一个文件夹 + `SKILL.md`（对齐 Anthropic Agent Skills 标准：YAML frontmatter 写 `name` + `description`），开机自动进 SKILLS_INDEX
@@ -247,9 +282,7 @@ A: 编辑 [mykey.py](./mykey.py)，通用模板见 [mykey_template.py](./mykey_t
 | [skill_director_vlm](./skills/skill_director_vlm/SKILL.md) | VLM 当导演的三场景审片模板 |
 | [skill_entity_consistency](./skills/skill_entity_consistency/SKILL.md) | 角色一致性 / 三视图 / 防 ID 漂移 |
 | [skill_video_chain](./skills/skill_video_chain/SKILL.md) | 链式衔接 / 帧裁剪 / 防画质劣化 |
-| [skill_storyboard_grid](./skills/skill_storyboard_grid/SKILL.md) | 🆕 **九宫格关键帧并行法**（适用多镜头切换片，不适用连续运动） |
-| [skill_audio](./skills/skill_audio/SKILL.md) | BGM 决策 + BigMusic 接入 + prompt 纪律 |
-| [skill_storyboard](./skills/skill_storyboard/SKILL.md) | 分镜设计 / entities_planned 必填 |
+| [skill_storyboard](./skills/skill_storyboard/SKILL.md) | 分镜设计 / entities_planned 必填 / **并行 or 链式出片路线选择 + 关键帧并行法** |
 
 ---
 

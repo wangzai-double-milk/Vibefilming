@@ -90,11 +90,10 @@
 
 | 你想改… | 改这个文件 |
 |---|---|
-| 分镜怎么排、必填哪些字段 | `skills/skill_storyboard/SKILL.md` |
+| 分镜怎么排、必填哪些字段、**并行/链式出片路线 + 关键帧并行法** | `skills/skill_storyboard/SKILL.md` |
 | 怎么保证角色不变脸 | `skills/skill_entity_consistency/SKILL.md` |
 | 写画面 prompt 的句式、禁忌词 | `skills/skill_prompt_engineering/SKILL.md` |
 | 多段视频怎么链式承接 | `skills/skill_video_chain/SKILL.md` |
-| **九宫格关键帧并行出片** | `skills/skill_storyboard_grid/SKILL.md` |
 | 审片问什么、什么算不过 | `skills/skill_director_vlm/SKILL.md` |
 | BGM/配音怎么做 | `skills/skill_audio/SKILL.md` |
 | 串行还是并行、怎么控预算 | `skills/skill_async_schedule/SKILL.md` |
@@ -123,7 +122,7 @@
 
 ## 四、举个例子：我想让它默认都用九宫格
 
-1. 它**已经有**这个技能了 → `skills/skill_storyboard_grid/`，你直接说"用九宫格做"它就会读。
+1. 它**已经有**这个技能了 → 关键帧并行法已并入 `skills/skill_storyboard/`，你直接说"用九宫格/关键帧并行做"它就会读。
 2. 想让它**默认**（不用每次都说）→ 改 `skills/skill_self_decision/SKILL.md`，加一句"多镜头默认走九宫格并行，只有武打/长镜头连续运动的片子才改用链式承接"。
 3. 不用碰 system，不用碰代码，下次对话生效。
 

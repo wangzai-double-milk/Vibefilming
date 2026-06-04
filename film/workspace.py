@@ -3,11 +3,12 @@
 每个项目 = projects/<project_id>/  目录，结构：
   manifest.json          ← 项目状态（budget / entities / 元信息）
   storyboard.json        ← 分镜：title/duration/ratio/shots[]/entities_planned[]
-  entities/              ← 角色/物体/场景档案库（每个 entity 一个子目录）
-    <entity_name>/
-      ref.json           ← entity 元信息：description/canonical_view/views[]
-      <view_name>.png    ← 视角/状态图：front / side_left / sheathed / drawn ...
-  shots/                 ← 关键帧 + 镜头视频
+  entities/              ← 角色/道具/场景的参考图（gen_image 中 name 以 ref_ 开头的落这里）
+    ref_<主体>_<view>.png  ← 扁平命名，一张图一个文件：
+                            ref_dancer_girl_front.png / ref_living_room_wide.png ...
+                          （没有 ref.json 档案库、没有 per-entity 子目录——一个 entity 就是几张 ref_ 图，
+                            agent 在上下文里自己记「主体名 → 图 url」，必要时 file_write 一个小 json 备查）
+  shots/                 ← 关键帧（gen_image 非 ref_ 前缀）+ 镜头视频（gen_video_t2v）
   audios/                ← BGM / TTS 等音频产物（gen_audio_bgm 落盘到这里）
   composed/              ← 拼接/裁剪/字幕/audio_amix 等后期产物
   reviews/               ← vlm_understand 输出 + 抽帧

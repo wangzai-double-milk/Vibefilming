@@ -122,8 +122,12 @@ def _clean_content(text):
 
 def _compact_tool_args(name, args):
     a = {k: v for k, v in args.items() if k != '_index'}
-    for k in ('path',): 
-        if k in a: a[k] = os.path.basename(a[k])
+    for k in ('path',):
+        # 只把超长的绝对路径压成 basename；相对路径（skills/xxx/SKILL.md 等）原样显示，
+        # 否则 basename 会把 skill 调用显示成裸 `SKILL.md`，误以为 agent 漏了目录前缀。
+        v = a.get(k)
+        if isinstance(v, str) and os.path.isabs(v):
+            a[k] = os.path.basename(v)
     if name == 'update_working_checkpoint': s = a.get('key_info', ''); return (s[:60]+'...') if len(s)>60 else s
     if name == 'ask_user':
         q = str(a.get('question', ''))

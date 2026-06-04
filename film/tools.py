@@ -175,19 +175,20 @@ def _project_open(handler, args):
 # ============== 视觉生成 ==============
 @film_tool(
     name="gen_image",
-    desc="Seedream 4.0 文生图 / 图编辑 / 多图融合。带 ref_image_url（单图）或 ref_image_urls（多图，最多14张）即编辑/融合模式。watermark 默认 false（不加水印）。落到 shots/<name>.png。返回 {path, url, name}。角色/道具/场景的参考图也用这个工具生成——怎么用它维护跨镜头一致性（白底三视图 / 面部特写 / 锁参考）见 skills/skill_entity_consistency/SKILL.md",
+    desc="Seedream 4.5 文生图 / 图编辑 / 多图融合。带 ref_image_url（单图）或 ref_image_urls（多图，最多14张）即编辑/融合模式。watermark 默认 false（不加水印）。**落盘目录按 name 前缀自动区分**：name 以 `ref_` 开头的参考图（角色三视图/大头照/场景图/道具图）落 entities/，其余（关键帧等）落 shots/。返回 {path, url, name}。角色/道具/场景的参考图也用这个工具生成——怎么用它维护跨镜头一致性（白底三视图 / 面部特写 / 锁参考）见 skills/skill_entity_consistency/SKILL.md",
     params={
         "prompt": {"type": str, "description": "图像描述"},
-        "name": {"type": str, "description": "产物文件名（不含扩展名）"},
-        "ref_image_url": {"type": str, "description": "[可选] 单张参考图 URL（图编辑模式）"},
-        "ref_image_urls": {"type": "array", "items": {"type": "string"}, "description": "[可选] 多张参考图 URL（最多 14 张，多图融合模式）。传了优先于 ref_image_url"},
+        "name": {"type": str, "description": "产物文件名（不含扩展名）。**参考图（角色/场景/道具，会被 reference_images 引用的）必须以 `ref_` 开头**，会落到 entities/；关键帧等其他图落 shots/"},
+        "ref_image_url": {"type": str, "description": "[可选] 单张参考图（图编辑模式）。优先传本地 path（如上一张 gen_image 返回的 path，自动 base64 内嵌、最稳），也支持 http(s) url"},
+        "ref_image_urls": {"type": "array", "items": {"type": "string"}, "description": "[可选] 多张参考图（最多 14 张，多图融合模式）。本地 path 或 url 均可，传了优先于 ref_image_url"},
         "size": {"type": str, "description": "尺寸", "default": "1024x1024"},
         "watermark": {"type": bool, "description": "是否加「AI 生成」水印", "default": False},
     },
     required=["prompt", "name"],
 )
 def _gen_image(handler, args):
-    """文生图 / 图编辑 / 多图融合（Seedream）。落到 shots/<name>.png，返回 {path, url, name}。
+    """文生图 / 图编辑 / 多图融合（Seedream）。返回 {path, url, name}。
+    落盘目录按 name 前缀自动区分：`ref_` 开头的参考图落 entities/，其余落 shots/。
     传 ref_image_urls（数组，最多 14 张）做多图融合；传单张也可。角色/道具/场景的参考图
     也用这个工具生成——怎么用它维护跨镜头一致性见 skills/skill_entity_consistency/SKILL.md。"""
     prompt = args["prompt"]
@@ -200,7 +201,9 @@ def _gen_image(handler, args):
         ref = args.get("ref_image_url")
     size = args.get("size", "1024x1024")
     watermark = bool(args.get("watermark", False))
-    save = _project_path(handler, "shots", f"{name}.png")
+    # 参考图（ref_ 前缀）落 entities/，关键帧等其余图落 shots/——别再混在一起
+    subdir = "entities" if name.startswith("ref_") else "shots"
+    save = _project_path(handler, subdir, f"{name}.png")
     save.parent.mkdir(parents=True, exist_ok=True)
     r = sdk.gen_image(prompt, save, ref_image_url=ref, size=size, watermark=watermark)
     ws.log_model_call(_active_pid(handler), "seedream", {
@@ -261,13 +264,13 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
 
 @film_tool(
     name="gen_video_t2v",
-    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审，再把这些图的 url 放进 reference_images。**链式衔接、配乐策略、跨镜头一致性详见 skills/skill_video_chain/SKILL.md / skills/skill_entity_consistency/SKILL.md**",
+    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审，再把这些图放进 reference_images（**直接传 gen_image 返回的本地 path 即可，无需 url**）。**链式衔接、配乐策略、跨镜头一致性详见 skills/skill_video_chain/SKILL.md / skills/skill_entity_consistency/SKILL.md**",
     params={
         "prompt": {"type": str, "description": "视频描述。链式段必须显式承接上段（'承接上段视频，...'）。需要锁首/尾帧画面用文字暗示：'opening frame: ...; ending frame: ...'"},
         "name": {"type": str, "description": "产物文件名（不含扩展名）"},
         "duration": {"type": int, "description": "视频时长 4-15 秒", "minimum": 4, "maximum": 15},
         "generate_audio": {"type": bool, "description": "Seedance 2.0 原生同步音频。配乐策略见 skill_video_chain.md", "default": False},
-        "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图 URL 列表（最多 9 张）。把本 shot 角色/道具/场景的参考图 url 都放进来锁一致性"},
+        "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图列表（最多 9 张）。把本 shot 角色/道具/场景的参考图都放进来锁一致性。**强烈建议直接传 gen_image 返回的本地 path**（短、好转抄，工具会自动 base64 内嵌）；不要转抄那条很长的带签名 url——签名 query 一旦被你截断，Seedance 服务端就会报 resource download failed"},
         "reference_video_url": {"type": str, "description": "[链式段（≥2 段视频中第 N≥2 段）必传] 上一段视频。可传 query_video_task 返回的 video_url（云端 url），也可传 path（本地 mp4 路径，工具会自动反查同名 .url.txt sidecar 取云端 url）。最多 1 段"},
         "resolution": {"type": str, "enum": ["480p", "720p", "1080p"], "default": "720p"},
         "ratio": {"type": str, "enum": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], "default": "16:9"},

@@ -12,7 +12,7 @@
 #   3. 在 API Key 管理页新建一个 key（形如 ark-xxxxxxxx-xxxx-...）
 #   4. 同账户下需开通这几个模型的访问权限：
 #        · doubao-seed-2-0-pro-260215   （文本 + VLM + 视频理解，必需）
-#        · doubao-seedream-4-0-250828   （文生图 / 图编辑，必需）
+#        · doubao-seedream-4-5-251128   （文生图 / 图编辑，必需）
 #        · doubao-seedance-2-0-260128   （文生视频，必需）
 #
 # 怎么拿 VOLC_AK / VOLC_SK（火山 OpenAPI，可选 - 用于 gen_audio_bgm 整片 BGM）：

@@ -1,6 +1,6 @@
 # Installation Guide
 
-This is the detailed installation guide for **GenericAgent**.
+This is the detailed installation guide for **VibeFilming** (built on the GenericAgent core).
 
 Two audiences:
 

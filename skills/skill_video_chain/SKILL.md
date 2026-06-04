@@ -182,6 +182,17 @@ audio_amix("final_no_bgm.mp4", "external_bgm.mp3", "final_with_bgm", bgm_volume=
 
 ---
 
+### Case C · 30s 小动物公益广告，5 段全部 reference_video_url=null（p20260604_132816_）
+
+- ❌ 实际做法：s01→s05 五段都标了 `chain_with`，但每段 `gen_video_t2v` 都 `reference_video_url=null`，只各塞两张静态参考图（橘猫 turnaround + 女生 turnaround）就开拍
+- 后果：橘猫从"瘦小脏橘猫"到"干净蓬松橘猫"本就跨场景（街边→医院→客厅），又没有上一段视频兜底 → 主体逐段漂移、女生造型跨镜头不稳，整片一致性崩坏
+- 根因：agent 把"喂了角色参考图"误当成"链住了"。**静态图只锁"长什么样"，锁不住"上一段结尾的姿态/位置/光影/运动惯性"**——这部分只有上一段视频能提供
+- ✅ 正确做法：s02 起每段必传 `reference_video_url=上一段 query_video_task 的 video_url` + prompt 写"承接上段视频" + 静态参考图照常放 reference_images。两层一起上才链得住
+
+> ⚠️ 这是 sys_prompt 机制铁律 #10 的来源案例。**有 chain_with 却 reference_video_url=null = 直接违反铁律**。
+
+---
+
 ## V-6 ⭐ 拼接帧裁剪铁律（官方解法）
 
 **典型现象**：用"延长模式 / 链式段"按顺序生成的视频，使用 `video_concat` 直接拼接后，在衔接处（第 5s / 10s / 15s 等切换点）出现**画面瞬间跳动 / 内容回退**——肉眼可见的"咔"。

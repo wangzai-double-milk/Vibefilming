@@ -69,7 +69,7 @@ def get_extra(name: str, default=None):
 # ============== 模型 ID（可统一改） ==============
 MODEL_TEXT = "doubao-seed-2-0-pro-260215"
 MODEL_VLM = "doubao-seed-2-0-pro-260215"
-MODEL_IMG = "doubao-seedream-4-0-250828"
+MODEL_IMG = "doubao-seedream-4-5-251128"
 MODEL_VIDEO = "doubao-seedance-2-0-260128"  # 标准版（已弃用 fast 档）
 
 
@@ -113,6 +113,29 @@ def _download(url: str, save_path: Path, timeout: int = 180) -> Path:
     save_path.parent.mkdir(parents=True, exist_ok=True)
     save_path.write_bytes(urllib.request.urlopen(url, timeout=timeout).read())
     return save_path
+
+
+def _img_to_url(ref: str) -> str:
+    """把图片参考归一成模型能直接吃的形式。
+    - http(s)/data: 原样返回；
+    - 本地存在的文件 → base64 内嵌成 data URI。
+      这样 agent 只需转抄很短的本地 path，不必转抄那条很长的带签名 url；
+      实测 LLM 转抄长 url 时常把 `?X-Tos-Signature=...` query 段截掉，
+      丢给 Seedance 一个无签名裸 url → 服务端报 resource download failed。
+      base64 内嵌从根上绕开"转抄长 url"这一步。
+    - 其余（找不到的字符串）原样返回，交给上游报错。
+    """
+    s = str(ref).strip()
+    if s.startswith(("http://", "https://", "data:")):
+        return s
+    p = Path(s)
+    if p.exists():
+        suffix = p.suffix.lower().lstrip(".") or "png"
+        if suffix == "jpg":
+            suffix = "jpeg"
+        b64 = base64.b64encode(p.read_bytes()).decode()
+        return f"data:image/{suffix};base64,{b64}"
+    return s
 
 
 # ============== Doubao 文本 / VLM ==============
@@ -185,6 +208,7 @@ def gen_image(prompt: str, save_path: Path,
     """Seedream 4.0 — 文生图 / 图编辑 / 多图融合。返回 {url, path, raw}。
 
     ref_image_url: None=文生图；str=单图编辑；list[str]=多图融合（最多 14 张）。
+        可传本地 path（自动 base64 内嵌）或 http(s) url；优先传本地 path，省去转抄长签名 url。
     watermark: 是否加「AI 生成」水印（官方默认 true，本 SDK 默认 false）。
     """
     body = {
@@ -196,7 +220,10 @@ def gen_image(prompt: str, save_path: Path,
         "n": 1,
     }
     if ref_image_url:
-        body["image"] = ref_image_url
+        if isinstance(ref_image_url, (list, tuple)):
+            body["image"] = [_img_to_url(x) for x in ref_image_url]
+        else:
+            body["image"] = _img_to_url(ref_image_url)
     raw = _http_post(f"{get_ark_base()}/images/generations", body)
     url = raw["data"][0]["url"]
     p = _download(url, Path(save_path))
@@ -239,7 +266,7 @@ def submit_video_task(prompt: str,
                 continue
             content.append({
                 "type": "image_url",
-                "image_url": {"url": url},
+                "image_url": {"url": _img_to_url(url)},
                 "role": "reference_image",
             })
     if reference_video_url:

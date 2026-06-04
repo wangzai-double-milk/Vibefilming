@@ -1,6 +1,6 @@
 ---
 name: skill-entity-consistency
-description: 分镜定稿后、任何 gen_video_t2v 之前；要保证角色/道具/场景跨镜头一致、防变脸/防双胞胎/多人场景时。 用 gen_image 出参考图、再把图 url 放进 gen_video_t2v 的 reference_images，保证跨镜头不变脸、不变形、不变色。
+description: 分镜定稿后、任何 gen_video_t2v 之前；要保证角色/道具/场景跨镜头一致、防变脸/防双胞胎/多人场景时。 用 gen_image 出参考图、再把图的本地 path 放进 gen_video_t2v 的 reference_images，保证跨镜头不变脸、不变形、不变色。
 ---
 
 # Skill · 角色 / 道具 / 场景一致性（Entity Consistency）
@@ -9,7 +9,9 @@ description: 分镜定稿后、任何 gen_video_t2v 之前；要保证角色/道
 > **关键工具**：`gen_image`（出参考图）+ `gen_video_t2v` 的 `reference_images`（喂参考图）+ `vlm_understand`（审参考图）。
 > **目的**：保证跨镜头主体（角色/关键道具/主场景）**不变脸、不变形、不变色**。
 
-> ⚠️ 没有"entity 档案库"这种工具了。一个角色/道具/场景**就是几张图**——你用 `gen_image` 生成它，记住返回的 `url`，出视频时把 url 放进 `reference_images`。所谓"档案"就是你自己在上下文里记住的「主体名 → 图 url」对应关系（必要时 `file_write` 一个小 json 落盘备查）。
+> ⚠️ 没有"entity 档案库"这种工具了。一个角色/道具/场景**就是几张参考图**——你用 `gen_image` 生成它，记住返回的**本地 `path`**，出视频时把 path 放进 `reference_images`（工具会自动 base64 内嵌）。**优先传 path，别去转抄那条很长的带签名 `url`**——实测转抄长 url 时极易把末尾 `?X-Tos-Signature=...` 签名段漏掉，丢给 Seedance 一个无签名裸 url，服务端就报"resource download failed"。path 很短、转抄不会出错。所谓"档案"就是你自己在上下文里记住的「主体名 → 图 path」对应关系（必要时 `file_write` 一个小 json 落盘备查）。但是注册好的东西得放在 entity 文件夹里。
+
+> 📁 **参考图落盘规范（强制）**：所有参考图（角色三视图 / 大头照 / 场景图 / 道具图）的 `gen_image` `name` **必须以 `ref_` 开头**——工具据此自动落到 `entities/` 目录，跟 `shots/`（关键帧 + 镜头视频）分开。命名格式 `ref_<主体>_<view>`，如 `ref_dancer_girl_front` / `ref_living_room_wide` / `ref_sword_default`。**不带 `ref_` 前缀的图会落进 shots/ 跟视频混在一起**，是错的。
 
 ---
 
@@ -23,7 +25,7 @@ description: 分镜定稿后、任何 gen_video_t2v 之前；要保证角色/道
 
 1. 分镜里出现的**每一个主体**（character / prop / scene，**prop 不许漏**）都已用 `gen_image` 出好参考图
 2. 每张参考图都已 `vlm_understand` 过审（character 基准图、scene 的 wide、prop 的 default 都要审）
-3. 该 shot 的 `reference_images` 必须**列全本 shot 出现的所有角色 + 道具 + 场景的参考图 url**，一个都不能漏
+3. 该 shot 的 `reference_images` 必须**列全本 shot 出现的所有角色 + 道具 + 场景的参考图（传本地 path）**，一个都不能漏
 
 > ❌ 反例 1：分镜写了道具 "speaker"，但 agent 没出它的参考图，s01 的 reference_images 只放了猫和客厅的图 → speaker 形象每段乱变。
 > ❌ 反例 2：客厅场景图出完没 vlm 审就直接开拍 → 场景基准没确认，后面镜头穿帮。
@@ -47,14 +49,14 @@ description: 分镜定稿后、任何 gen_video_t2v 之前；要保证角色/道
 > **三视图（turnaround）= 一张图含 front+side+back 三个视角**（行业标准 character turnaround sheet）。视频模型参考这 1 张就够，**别为一个角色出一堆单视角图**——1 张三视图比 5 张单视角更稳，还省预算。
 > **何时追加额外图**（按需，不是默认）：特殊姿态/动作（dancing/shooting）单独出一张；出现 ID 漂移升级 face_closeup；场景/道具有多状态（dusk/broken）按需加。图比视频便宜得多（Seedream 5-10s/张 vs Seedance 200-300s/段），但没需要别乱加。
 
-文件命名建议：`<主体名>_<view>`，如 `protagonist_li_turnaround` / `living_room_wide` / `sword_default`，方便你自己记 url。
+文件命名建议：`ref_<主体名>_<view>`（**必须 `ref_` 前缀**才会落进 entities/），如 `ref_protagonist_li_turnaround` / `ref_living_room_wide` / `ref_sword_default`，方便你自己记 url。
 
 ### Step 2 · 用 `gen_image` 逐张出图（基准图 → 锁参考续作）
 
-`gen_image` 是**原子工具**：prompt 原样发给 Seedream，`ref_image_url` 传不传由你决定。**素材规范要你自己写进 prompt**；**续作图要你自己把基准图 url 传进 `ref_image_url` 锁一致性**。
+`gen_image` 是**原子工具**：prompt 原样发给 Seedream，`ref_image_url` 传不传由你决定。**素材规范要你自己写进 prompt**；**续作图要你自己把基准图 path 传进 `ref_image_url` 锁一致性**。
 
-- **基准图**（每个主体第一张）：`ref_image_url` 留空（无参考）。出完记住返回的 `url`。
-- **续作图**（同主体的其他视角/动作/状态）：把基准图的 `url` 显式传进 `ref_image_url`，强制延续基准造型。
+- **基准图**（每个主体第一张）：`ref_image_url` 留空（无参考）。出完记住返回的**本地 `path`**。
+- **续作图**（同主体的其他视角/动作/状态）：把基准图的**本地 `path`** 显式传进 `ref_image_url`，强制延续基准造型。
 - **turnaround 三视图用宽尺寸**：`size="1920x1080"`，否则三视图挤一张方图里排不开。
 - 每出一张基准图，立刻 `vlm_understand` 审，过审再出续作。
 

@@ -99,14 +99,16 @@ def build_skills_index():
             continue
         # 单行命令清单格式：触发条件在前、命令在后，命令前用 → 显式分隔
         # 不用 markdown 表格——之前实测 agent 会把表格里 `skills/xxx/SKILL.md` 截成 `SKILL.md` 调用失败
-        # 用绝对路径——agent 的 file_read cwd 是 temp/，相对路径 skills/... 会被解析成 temp/skills/... 404
-        abs_fp = os.path.join(skills_dir, name, 'SKILL.md')
-        rows.append(f"- **触发**：{trigger}\n  **立即执行** → `file_read path=\"{abs_fp}\"`")
+        # 用相对路径 skills/<name>/SKILL.md：路径短不易被截断；cwd=temp 也能读到——
+        #   ga.py 的 _get_abs_path 已加仓库根回退兜底（temp/skills 不存在时回退到 <repo>/skills）。
+        rel_fp = f"skills/{name}/SKILL.md"
+        rows.append(f"- **触发**：{trigger}\n  **立即执行** → `file_read path=\"{rel_fp}\"`")
     if not rows:
         return ''
     header = (
-        "⛔ **路径完整性铁律**：下列每条 `file_read` 命令的 path 参数必须**逐字符完整复制**（含完整绝对路径），"
-        "**严禁**简写成 `SKILL.md`、`./SKILL.md` 或任何省略前缀的形式——整个路径是不可分割的整体，少一段就读不到文件。\n\n"
+        "⛔ **路径完整性铁律**：下列每条 `file_read` 命令的 path 参数必须**逐字符完整复制**"
+        "（完整的 `skills/<名字>/SKILL.md`），**严禁**简写成 `SKILL.md`、`./SKILL.md` 或任何省略 "
+        "`skills/<名字>/` 前缀的形式——整个路径是不可分割的整体，少一段就读不到文件。\n\n"
     )
     return header + "\n".join(rows)
 

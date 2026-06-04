@@ -1,4 +1,6 @@
-# GenericAgent 桌面版安装指南
+# VibeFilming 桌面版安装指南
+
+> 桌面安装包沿用 GenericAgent 内核的分发体系，下方文件名 / 应用名 `GenericAgent` 均为实际分发物名称，请照原样操作。
 
 ## 📦 安装步骤
 

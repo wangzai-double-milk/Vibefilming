@@ -1,6 +1,6 @@
 # 安装指南（中文）
 
-这是 **GenericAgent** 的详细安装指南。
+这是 **VibeFilming**（基于 GenericAgent 内核构建）的详细安装指南。
 
 两类读者：
 
