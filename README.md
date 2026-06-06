@@ -10,11 +10,11 @@
 
 <br/>
 
-![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Ark](https://img.shields.io/badge/Ark-1%20Key%20Only-111827?style=for-the-badge)
-![Seedance](https://img.shields.io/badge/Seedance-Video-7C3AED?style=for-the-badge)
-![Seedream](https://img.shields.io/badge/Seedream-Image-EC4899?style=for-the-badge)
-![Agent](https://img.shields.io/badge/Agent-Self%20Review-10B981?style=for-the-badge)
+![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue?style=flat-square&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+![Ark](https://img.shields.io/badge/Ark-1%20Key%20Only-black?style=flat-square)
+![Seedream](https://img.shields.io/badge/Seedream-image-purple?style=flat-square)
+![Seedance](https://img.shields.io/badge/Seedance-video-red?style=flat-square)
 
 <br/>
 
@@ -63,17 +63,17 @@ VibeFilming 负责把它们串成一部片
 
 ---
 
-## 🔥 为什么它是专业工具，而不是普通 demo？
+## 🔥 为什么影视小白也能直接用？
 
-| 专业点 | 普通 AI 视频工具 | VibeFilming |
+| 使用门槛 | 普通 AI 视频工具 | VibeFilming |
 |---|---|---|
-| 🚀 **上手门槛** | 要懂 Prompt、参数、模型差异 | 说人话即可，系统自动翻译成工程化指令 |
+| 💬 **表达方式** | 要会写 Prompt、懂镜头词、懂参数 | 直接说大白话，系统自动翻译成工程化指令 |
 | 🔑 **配置成本** | 文本、图像、视频、多模态各配各的 Key | **一把 `ark.api_key` 调通 Seed-Pro / Seedream / Seedance** |
-| 🎞️ **交付形态** | 多数只出一段素材 | 直接按短片流程交付 `final.mp4` |
-| 🧠 **自主程度** | 固定流水线，用户反复点按钮 | Agent 自己判断下一步、自己审、自己返工 |
-| 🧬 **一致性** | 多镜头容易变脸、变物、跳场景 | 角色/道具/场景参考图 + 链式承接 |
-| ⏱️ **速度体验** | 多段视频一段段等 | 多镜头可并行提交，明显缩短墙钟时间 |
-| 📚 **可进化** | 踩坑只能靠人记 | 成功经验和失败案例沉淀到 `skills/` 与记忆 |
+| 🎞️ **成片交付** | 多数只给你一段素材，还要自己剪 | 按短片流程自动拼接，最终交付 `final.mp4` |
+| 🧠 **操作负担** | 用户反复点按钮、调参数、判断要不要重做 | Agent 自己拆镜头、选工具、审片、返工 |
+| 🧬 **稳定程度** | 多镜头容易变脸、变物、跳场景 | 角色/道具/场景参考图 + 链式承接，尽量稳住一致性 |
+| ⏱️ **等待时间** | 多段视频通常一段段排队等 | 适合分镜时自动并行生成、并行审核 |
+| 📚 **使用经验** | 每次踩坑都靠人记 | 成功经验和失败案例沉淀到 `skills/` 与记忆 |
 
 ---
 
@@ -94,8 +94,6 @@ VibeFilming 负责把它们串成一部片
 ### 4. 🧐 自带导演审片，不再靠抽卡出片
 
 每张参考图、每段视频、每版成片都会进入 AI 审片。它不是简单打分，而是像导演一样把关：主角对不对、角色有没有变脸、动作自然不自然、镜头有没有断、情绪有没有到。出片不再靠反复抽卡碰运气，而是有一个 AI 导演持续盯片、挑错、返工。
-
-角色一致性也在这套审片和参考机制里一起解决：角色先出白底三视图，场景和道具先建视觉参考，拍摄时再把参考图喂给 Seedance。多镜头下更不容易变脸、变物、变场景。
 
 ### 5. ⚡ 能分镜就并行，生成和审核一起提速
 
@@ -229,11 +227,11 @@ python3 agentmain.py
 | 4 | 描述顺序乱 | 主体写在镜头之后，画面歪 |
 | 5 | 张嘴无声 | 写「老奶奶夸奖」没补台词 → 演员张嘴演哑剧 |
 
-### 3. ⚡ 九宫格参考 + 并行出片：长视频不必一段段傻等
+### 3. ⚡ 智能并行调度：能并行时就并行
 
-每个镜头都会引用分镜九宫格/关键帧作为参考图，相当于先给模型一张"导演分镜草图"，再让它把草图拍成动态视频，显著降低画面跑偏。
+VibeFilming 不是固定按顺序一段段拍。它会先判断片子结构：如果适合拆成多个相对独立的分镜，就自动拆镜头，并行提交生成任务。
 
-多镜头切换型短片可以把多个镜头**同时提交**：原来 5–8 段串行可能要两三个小时，并行后通常压到半个多小时。
+生成之后也不是攒到最后一起看，而是并行进入审片流程。能同时推进的镜头同时推进，只有确实需要承接上一段画面时才走串行链路。
 
 > 提示词含对话时，会明确写出谁在说话（如"女孩说：{我们一起带它回家吧}"），避免模型只看到台词却不知道谁在张嘴。
 
