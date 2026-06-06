@@ -908,7 +908,7 @@ def _vlm_understand(handler, args):
     is_video = (not clip_is_list) and suffix in _VIDEO_SUFFIX
 
     if is_video and args.get("mode", "auto") != "frames":
-        raw = sdk.doubao_video_understand(clip, question,
+        resp_data = sdk.doubao_video_understand(clip, question,
                                           max_tokens=int(args.get("max_tokens", 4096)),
                                           temperature=float(args.get("temperature", 0.1)),
                                           fps=fps, system=system)
@@ -921,11 +921,14 @@ def _vlm_understand(handler, args):
             paths = clip
         else:
             paths = [clip]
-        raw = sdk.doubao_vlm(paths, question,
+        resp_data = sdk.doubao_vlm(paths, question,
                              max_tokens=int(args.get("max_tokens", 4096)),
                              temperature=float(args.get("temperature", 0.1)),
                              system=system)
 
+    raw = resp_data["raw"]
+    payload = resp_data["body"]
+    
     answer = raw["choices"][0]["message"]["content"].strip()
 
     # 归档到 reviews/<name>.json
@@ -947,7 +950,7 @@ def _vlm_understand(handler, args):
         "mode": args.get("mode", "auto"),
         "max_tokens": int(args.get("max_tokens", 4096)),
         "temperature": float(args.get("temperature", 0.1)),
-    }, raw_request=payload, raw_response=resp)
+    }, raw_request=raw.get("body"), raw_response=raw.get("raw"))
 
     return {"question": question, "answer": answer}
 

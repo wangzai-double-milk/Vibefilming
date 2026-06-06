@@ -169,8 +169,16 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
         "role": "user",
         "content": image_msgs + [{"type": "text", "text": text}],
     })
-    return doubao_chat(messages, max_tokens=max_tokens,
-                       temperature=temperature, model=MODEL_VLM)
+    
+    body = {
+        "model": MODEL_VLM,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    
+    raw = _http_post(f"{get_ark_base()}/chat/completions", body)
+    return {"raw": raw, "body": body}
 
 
 def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
@@ -196,8 +204,16 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
             {"type": "text", "text": text},
         ],
     })
-    return doubao_chat(messages, max_tokens=max_tokens,
-                       temperature=temperature, model=MODEL_VLM)
+    
+    body = {
+        "model": MODEL_VLM,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    
+    raw = _http_post(f"{get_ark_base()}/chat/completions", body)
+    return {"raw": raw, "body": body}
 
 
 # ============== Seedream（文生图 / 图编辑统一接口）==============
