@@ -175,7 +175,7 @@ def _project_open(handler, args):
 # ============== 视觉生成 ==============
 @film_tool(
     name="gen_image",
-    desc="Seedream 4.5 文生图 / 图编辑 / 多图融合。带 ref_image_url（单图）或 ref_image_urls（多图，最多14张）即编辑/融合模式。watermark 默认 false（不加水印）。**落盘目录按 name 前缀自动区分**：name 以 `ref_` 开头的参考图（角色三视图/大头照/场景图/道具图）落 entities/，其余（关键帧等）落 shots/。返回 {path, url, name}。角色/道具/场景的参考图也用这个工具生成——怎么用它维护跨镜头一致性（白底三视图 / 面部特写 / 锁参考）见 skills/skill_entity_consistency/SKILL.md",
+    desc="Seedream 4.5 文生图 / 图编辑 / 多图融合。带 ref_image_url（单图）或 ref_image_urls（多图，最多14张）即编辑/融合模式。watermark 默认 false（不加水印）。**落盘目录按 name 前缀自动区分**：name 以 `ref_` 开头的参考图落 entities/，其余（关键帧等）落 shots/。返回 {path, url, name}。",
     params={
         "prompt": {"type": str, "description": "图像描述"},
         "name": {"type": str, "description": "产物文件名（不含扩展名）。**参考图（角色/场景/道具，会被 reference_images 引用的）必须以 `ref_` 开头**，会落到 entities/；关键帧等其他图落 shots/"},
@@ -264,7 +264,7 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
 
 @film_tool(
     name="gen_video_t2v",
-    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审，再把这些图放进 reference_images（**直接传 gen_image 返回的本地 path 即可，无需 url**）。**链式衔接、配乐策略、跨镜头一致性详见 skills/skill_video_chain/SKILL.md / skills/skill_entity_consistency/SKILL.md**",
+    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审，再把这些图放进 reference_images（**直接传 gen_image 返回的本地 path 即可，无需 url**）。",
     params={
         "prompt": {"type": str, "description": "视频描述。链式段必须显式承接上段（'承接上段视频，...'）。需要锁首/尾帧画面用文字暗示：'opening frame: ...; ending frame: ...'"},
         "name": {"type": str, "description": "产物文件名（不含扩展名）"},
@@ -625,12 +625,12 @@ def _video_portrait(handler, args):
 # ============== 音频 ==============
 @film_tool(
     name="audio_amix",
-    desc="把 BGM 音频混入视频原音轨。bgm_volume 一般 0.1-0.3 避免压过对白",
+    desc="把 BGM 音频混入视频原音轨。bgm_volume 一般 0.1-0.2 避免压过对白",
     params={
         "base_video": str,
         "bgm_audio": str,
         "name": str,
-        "bgm_volume": {"type": float, "default": 0.2},
+        "bgm_volume": {"type": float, "default": 0.1},
     },
     required=["base_video", "bgm_audio", "name"],
 )

@@ -1,14 +1,11 @@
 ---
 name: skill-prompt-engineering
-description: 做视频/短片/广告/MV/九宫格全程，**任何一次 gen_image / gen_video_t2v / gen_audio_bgm 调用前都必须先读我**（调用前最后一道关，无一例外）。我是调用前最后 30 秒 checklist：检查 prompt 文本本身、参数合法性（如 Seedance duration 只接受合法档位）、并留下痕迹可查的调用记录。不读我直接裸调 = prompt 凭直觉脑补 + 参数踩雷。
+description: 做视频/短片/广告/MV，**任何一次 gen_image / gen_video_t2v / gen_audio_bgm 调用前都必须先读我**（调用前最后一道关，无一例外）。我是调用前最后 30 秒 checklist：检查 prompt 文本本身、参数合法性（如 Seedance duration 只接受合法档位）、并留下痕迹可查的调用记录。不读我直接裸调 = prompt 凭直觉脑补 + 参数踩雷。
 ---
 
 # Skill · Prompt Engineering（调用前最后 30 秒 checklist）
 
 > **何时读我**：**每次** `gen_image` / `gen_video_t2v` 调用之前——**调用前最后一道关**。
-> 这一道是"prompt 文本检查"，不是"分镜结构想清楚"——后者去 [skill_storyboard.md](../skill_storyboard/SKILL.md)。
-> **来源**：火山官方《Seedance 2.0 R2V FAQ V1.7》第一/二/三/四章 + 本项目踩坑（篮球项目 BGM 漏出 / 环保广告跳过参考图 case）。
-
 ---
 
 ## ⛔ 调用前自检 · 4 大死罪（命中任意一条 → 立即停手改）
@@ -285,9 +282,6 @@ Seedance 靠括号识别音频意图——**不写括号 = 模型自己猜，靠
 │
 ├── 是 gen_image 出主体参考图（图编辑模式）
 │   └── 短 prompt 直接发
-│
-├── 是 MV 模式（A-4）
-│   └── 走 [skill_audio.md](../skill_audio/SKILL.md) A-4 章节，跳过 BGM 禁令
 │
 └── 其他所有视频生成
     └── 7 步 checklist：

@@ -69,7 +69,7 @@ def get_extra(name: str, default=None):
 # ============== 模型 ID（可统一改） ==============
 MODEL_TEXT = "doubao-seed-2-0-pro-260215"
 MODEL_VLM = "doubao-seed-2-0-pro-260215"
-MODEL_IMG = "doubao-seedream-4-5-251128"
+MODEL_IMG = "doubao-seedream-5-0-260128"
 MODEL_VIDEO = "doubao-seedance-2-0-260128"  # 标准版（已弃用 fast 档）
 
 
