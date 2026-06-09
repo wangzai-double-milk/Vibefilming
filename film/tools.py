@@ -908,23 +908,62 @@ def _vlm_understand(handler, args):
     is_video = (not clip_is_list) and suffix in _VIDEO_SUFFIX
 
     if is_video and args.get("mode", "auto") != "frames":
-        resp_data = sdk.doubao_video_understand(clip, question,
-                                          max_tokens=int(args.get("max_tokens", 4096)),
-                                          temperature=float(args.get("temperature", 0.1)),
-                                          fps=fps, system=system)
+        try:
+            resp_data = sdk.doubao_video_understand(clip, question,
+                                              max_tokens=int(args.get("max_tokens", 4096)),
+                                              temperature=float(args.get("temperature", 0.1)),
+                                              fps=fps, system=system)
+            fallback_reason = None
+        except Exception as e:
+            # 视频原生理解超时/网关抖动 → 自动降级到抽帧（frames）模式，避免任务整体失败
+            msg = str(e).lower()
+            is_timeout = ("timed out" in msg) or ("timeout" in msg) or isinstance(e, TimeoutError)
+            if not is_timeout:
+                raise
+            fallback_reason = f"video_native_timeout: {e}"
+            tmp = _project_path(handler, "reviews", name) if pid else Path(f"/tmp/{name}")
+            try:
+                fr = sdk.extract_frames(clip, tmp, fps=fps)
+                paths = fr["paths"][:max_frames]
+                resp_data = sdk.doubao_vlm(paths, question,
+                                     max_tokens=int(args.get("max_tokens", 4096)),
+                                     temperature=float(args.get("temperature", 0.1)),
+                                     system=system)
+            finally:
+                # 清理抽帧产物，避免 reviews/ 累积成几百兆
+                import shutil as _shutil
+                try:
+                    if tmp.exists():
+                        _shutil.rmtree(tmp)
+                except Exception:
+                    pass
     else:
+        fallback_reason = None
         if is_video:
             tmp = _project_path(handler, "reviews", name) if pid else Path(f"/tmp/{name}")
-            fr = sdk.extract_frames(clip, tmp, fps=fps)
-            paths = fr["paths"][:max_frames]
-        elif clip_is_list:
-            paths = clip
+            try:
+                fr = sdk.extract_frames(clip, tmp, fps=fps)
+                paths = fr["paths"][:max_frames]
+                resp_data = sdk.doubao_vlm(paths, question,
+                                     max_tokens=int(args.get("max_tokens", 4096)),
+                                     temperature=float(args.get("temperature", 0.1)),
+                                     system=system)
+            finally:
+                import shutil as _shutil
+                try:
+                    if tmp.exists():
+                        _shutil.rmtree(tmp)
+                except Exception:
+                    pass
         else:
-            paths = [clip]
-        resp_data = sdk.doubao_vlm(paths, question,
-                             max_tokens=int(args.get("max_tokens", 4096)),
-                             temperature=float(args.get("temperature", 0.1)),
-                             system=system)
+            if clip_is_list:
+                paths = clip
+            else:
+                paths = [clip]
+            resp_data = sdk.doubao_vlm(paths, question,
+                                 max_tokens=int(args.get("max_tokens", 4096)),
+                                 temperature=float(args.get("temperature", 0.1)),
+                                 system=system)
 
     raw = resp_data["raw"]
     payload = resp_data["body"]
@@ -935,10 +974,13 @@ def _vlm_understand(handler, args):
     if pid:
         out = ws.project_dir(pid) / "reviews" / f"{name}.json"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps({
+        archive = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "clip": clip, "question": question, "answer": answer,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        }
+        if fallback_reason:
+            archive["fallback"] = fallback_reason
+        out.write_text(json.dumps(archive, ensure_ascii=False, indent=2), encoding="utf-8")
 
     ws.log_model_call(pid, sdk.MODEL_VLM, {
         "via_tool": "vlm_understand",
@@ -951,9 +993,13 @@ def _vlm_understand(handler, args):
         "mode": args.get("mode", "auto"),
         "max_tokens": int(args.get("max_tokens", 4096)),
         "temperature": float(args.get("temperature", 0.1)),
+        "fallback": fallback_reason,
     }, raw_request=raw.get("body"), raw_response=raw.get("raw"))
 
-    return {"question": question, "answer": answer}
+    result = {"question": question, "answer": answer}
+    if fallback_reason:
+        result["fallback"] = fallback_reason
+    return result
 
 
 # ============== 注入到 handler ==============
