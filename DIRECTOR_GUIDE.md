@@ -28,7 +28,7 @@
 > 想看片子进行到哪、花了多少预算？用通用 `file_read` 读 `projects/<pid>/manifest.json` 即可，不再有专门工具。
 
 ### 📋 分镜（开拍前的剧本）
-分镜**不再是独立工具**——用通用 `file_write` 把分镜 JSON 写到 `projects/<pid>/storyboard.json`（几个镜头、每镜多长、谁出场、什么机位、做什么动作），用 `file_read` 读回。写法/必含字段见 `skills/skill_storyboard/SKILL.md`。
+分镜**不再是独立工具**——用通用 `file_write` 把分镜 JSON 写到 `projects/<pid>/storyboard.json`（几个镜头、每镜多长、谁出场、什么机位、做什么动作），用 `file_read` 读回。写法/必含字段见 `skills/skill_video/SKILL.md`。
 
 ### 🎭 角色 / 道具 / 场景（保证前后长得一样）
 没有专门的"角色档案"工具——一个角色/道具/场景**就是几张图**：
@@ -37,7 +37,7 @@
 2. 自己记住「主体名 → 图 url」的对应关系；
 3. 出视频时把这些 url 放进 `gen_video_t2v` 的 `reference_images`，所有镜头都拿同一批图当参照。
 
-> 这是**防"变脸"**的关键：先把每个角色/道具的样子用 gen_image 定死并过审，后面所有镜头都喂同一批参考图，人物就不会拍着拍着换了张脸。具体出图模板/防漂移方法见 `skills/skill_entity_consistency/SKILL.md`。
+> 这是**防"变脸"**的关键：先把每个角色/道具的样子用 gen_image 定死并过审，后面所有镜头都喂同一批参考图，人物就不会拍着拍着换了张脸。具体出图模板/防漂移方法见 `skills/skill_video/SKILL.md`。
 
 ### 🖼️ 出图 / 出视频
 | 工具 | 干嘛的 |
@@ -90,14 +90,8 @@
 
 | 你想改… | 改这个文件 |
 |---|---|
-| 分镜怎么排、必填哪些字段、**并行/链式出片路线 + 关键帧并行法** | `skills/skill_storyboard/SKILL.md` |
-| 怎么保证角色不变脸 | `skills/skill_entity_consistency/SKILL.md` |
+| 分镜怎么排、角色怎么不变脸、多段怎么链式承接、审片问什么、BGM 怎么做、串行还是并行 | `skills/skill_video/SKILL.md`（影视制作主流程已整合进这一个文件） |
 | 写画面 prompt 的句式、禁忌词 | `skills/skill_prompt_engineering/SKILL.md` |
-| 多段视频怎么链式承接 | `skills/skill_video_chain/SKILL.md` |
-| 审片问什么、什么算不过 | `skills/skill_director_vlm/SKILL.md` |
-| BGM/配音怎么做 | `skills/skill_audio/SKILL.md` |
-| 串行还是并行、怎么控预算 | `skills/skill_async_schedule/SKILL.md` |
-| AI 什么时候该自己拿主意、什么时候问你 | `skills/skill_self_decision/SKILL.md` |
 
 **加一个全新技能**：在 `skills/` 下新建一个文件夹 `skill_你的名字/`，里面放一个 `SKILL.md`（对齐 Anthropic Agent Skills 标准）：
 - 文件顶部用 `---` 包一段 YAML：`name`（小写连字符，如 `skill-你的名字`）+ `description`（一句话写清"这个技能干什么 + 什么时候该用"，这段会自动出现在 AI 的技能菜单里驱动触发）
@@ -122,8 +116,8 @@
 
 ## 四、举个例子：我想让它默认都用九宫格
 
-1. 它**已经有**这个技能了 → 关键帧并行法已并入 `skills/skill_storyboard/`，你直接说"用九宫格/关键帧并行做"它就会读。
-2. 想让它**默认**（不用每次都说）→ 改 `skills/skill_self_decision/SKILL.md`，加一句"多镜头默认走九宫格并行，只有武打/长镜头连续运动的片子才改用链式承接"。
+1. 它**已经有**这个技能了 → 关键帧并行法已并入 `skills/skill_video/SKILL.md`，你直接说"用九宫格/关键帧并行做"它就会读。
+2. 想让它**默认**（不用每次都说）→ 改 `skills/skill_video/SKILL.md`，加一句"多镜头默认走九宫格并行，只有武打/长镜头连续运动的片子才改用链式承接"。
 3. 不用碰 system，不用碰代码，下次对话生效。
 
 > 注：九宫格适合"镜头之间是切换"的片子（广告/MV/产品）。**武打、追逐这种讲究连续动作的，反而该走链式承接**——这条判断就写在上面第 2 步那个文件里。

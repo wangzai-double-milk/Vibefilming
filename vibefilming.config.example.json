@@ -3,7 +3,7 @@
     "api_key": "ark-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
     "api_base": "https://ark.cn-beijing.volces.com/api/v3",
     "models": {
-      "text": "doubao-seed-2-0-pro-260215",
+      "text": "deepseek-v4-pro-260425",
       "vlm": "doubao-seed-2-0-pro-260215",
       "image": "doubao-seedream-4-5-251128",
       "video": "doubao-seedance-2-0-260128"

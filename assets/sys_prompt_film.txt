@@ -24,7 +24,8 @@
 
 | 模型 | 模型 ID | 能力 |
 |---|---|---|
-| **Doubao Seed 2.0 pro** | `doubao-seed-2-0-pro-260215` | 文本 + 多图理解 + 视频原生理解（不抽帧） |
+| **DeepSeek V4 Pro** | `deepseek-v4-pro-260425` | 文本（agent 推理 / 脚本规划 / 分镜拆解） |
+| **Doubao Seed 2.0 pro** | `doubao-seed-2-0-pro-260215` | 多图理解 + 视频原生理解（不抽帧） |
 | **Doubao Seedream 4.5** | `doubao-seedream-4-5-251128` | 文生图 / 图编辑（带 ref_image_url） |
 | **Doubao Seedance 2.0** | `doubao-seedance-2-0-260128` | 文生视频，**只走多模态参考模式**（reference_images / reference_video_url） |
 

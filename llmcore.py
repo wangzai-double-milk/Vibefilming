@@ -26,7 +26,7 @@ def _runtime_config_from_json(cfg):
             'name': 'doubao',
             'apikey': api_key,
             'apibase': ark.get('api_base') or 'https://ark.cn-beijing.volces.com/api/v3',
-            'model': models.get('text') or 'doubao-seed-2-0-pro-260215',
+            'model': models.get('text') or 'deepseek-v4-pro-260425',
             'api_mode': 'chat_completions',
             'max_retries': 3,
             'connect_timeout': 10,

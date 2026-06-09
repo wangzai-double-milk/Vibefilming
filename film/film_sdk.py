@@ -76,7 +76,7 @@ def get_model(name: str, default: str) -> str:
 
 
 # ============== 模型 ID（可统一改） ==============
-MODEL_TEXT = get_model("text", "doubao-seed-2-0-pro-260215")
+MODEL_TEXT = get_model("text", "deepseek-v4-pro-260425")
 MODEL_VLM = get_model("vlm", "doubao-seed-2-0-pro-260215")
 MODEL_IMG = get_model("image", "doubao-seedream-4-5-251128")
 MODEL_VIDEO = get_model("video", "doubao-seedance-2-0-260128")  # 标准版（已弃用 fast 档）
