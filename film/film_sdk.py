@@ -16,6 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -118,6 +119,48 @@ def _http_delete(url: str, timeout: int = 60) -> dict:
         return {"ok": False, "status": e.code, "body": e.read().decode("utf-8", "ignore")}
 
 
+def _http_post_multipart(url: str, fields: dict, file_field: str,
+                         file_path: Path, timeout: int = 600) -> dict:
+    """以 multipart/form-data 上传文件（ark Files API 用，纯标准库实现，不依赖 requests）。
+    fields: 普通文本字段；file_field: 文件字段名；file_path: 本地文件。
+    """
+    key = get_ark_key()
+    if not key:
+        raise RuntimeError("ARK API key 未配置：请在 vibefilming.config.json 中填写 ark.api_key")
+    boundary = f"----vibefilming{uuid.uuid4().hex}"
+    crlf = b"\r\n"
+    parts = []
+    for k, v in fields.items():
+        parts.append(b"--" + boundary.encode() + crlf)
+        parts.append(f'Content-Disposition: form-data; name="{k}"'.encode() + crlf + crlf)
+        parts.append(str(v).encode() + crlf)
+    fp = Path(file_path)
+    suffix = fp.suffix.lower().lstrip(".") or "mp4"
+    parts.append(b"--" + boundary.encode() + crlf)
+    parts.append(
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{fp.name}"'.encode()
+        + crlf
+    )
+    parts.append(f"Content-Type: video/{suffix}".encode() + crlf + crlf)
+    parts.append(fp.read_bytes() + crlf)
+    parts.append(b"--" + boundary.encode() + b"--" + crlf)
+    data = b"".join(parts)
+    req = urllib.request.Request(
+        url, data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"HTTP {e.code} on {url}: {body_text[:300]}")
+
+
 def _download(url: str, save_path: Path, timeout: int = 180) -> Path:
     save_path.parent.mkdir(parents=True, exist_ok=True)
     save_path.write_bytes(urllib.request.urlopen(url, timeout=timeout).read())
@@ -190,13 +233,126 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
     return {"raw": raw, "body": body}
 
 
+def upload_file_ark(file_path: Path, fps: float = 1.0, timeout: int = 600) -> dict:
+    """上传本地文件到 ark Files API，返回文件元信息（含 id）。
+    用于 >50MB 大文件：base64 内嵌进 chat/completions 会被网关拒收（Broken pipe / 413），
+    官方要求改走 Files API + Responses API。
+    fps: 视频抽帧速率（预处理用），长视频画面变化小可调低省时。
+    """
+    r = _http_post_multipart(
+        f"{get_ark_base()}/files",
+        fields={"purpose": "user_data", "preprocess_configs[video][fps]": fps},
+        file_field="file",
+        file_path=Path(file_path),
+        timeout=timeout,
+    )
+    return r
+
+
+def wait_file_active(file_id: str, timeout: int = 300, interval: int = 3) -> dict:
+    """轮询文件预处理状态，直到 active 才能在 Responses API 中使用。
+    抛 TimeoutError / RuntimeError（失败状态）。
+    """
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = _http_get(f"{get_ark_base()}/files/{file_id}")
+        status = last.get("status")
+        if status == "active":
+            return last
+        if status in ("failed", "error", "expired"):
+            raise RuntimeError(f"文件 {file_id} 预处理失败：status={status}, detail={last}")
+        time.sleep(interval)
+    raise TimeoutError(f"文件 {file_id} 预处理超时 {timeout}s，last={last}")
+
+
+def delete_file_ark(file_id: str) -> dict:
+    """删除 ark 上传的文件（用完清理，避免占满 20GB 配额）。"""
+    return _http_delete(f"{get_ark_base()}/files/{file_id}")
+
+
+def _responses_extract_text(raw: dict) -> str:
+    """从 Responses API 返回里抽出纯文本回答。
+    Responses 的输出结构：output 是 item 列表，message item 的 content 里
+    type=output_text 的项带 text。做防御式解析，兼容多种字段命名。
+    """
+    # 优先 SDK 风格的 output_text 便捷字段
+    if isinstance(raw.get("output_text"), str) and raw["output_text"].strip():
+        return raw["output_text"].strip()
+    texts = []
+    for item in raw.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for c in item.get("content", []) or []:
+            if isinstance(c, dict) and c.get("type") in ("output_text", "text") and c.get("text"):
+                texts.append(c["text"])
+    return "\n".join(texts).strip()
+
+
+def _video_understand_via_files(video: str, text: str, fps: float,
+                                system: Optional[str], max_tokens: int) -> dict:
+    """大文件路径：Files API 上传 → 等 active → Responses API 引用 file_id。
+    返回归一成 chat/completions 形状的 {raw, body}，让上层调用方无需区分大小路径。
+    用完删除上传文件。
+    """
+    file_id = None
+    try:
+        meta = upload_file_ark(Path(video), fps=fps)
+        file_id = meta.get("id")
+        if not file_id:
+            raise RuntimeError(f"Files API 上传未返回 id：{meta}")
+        wait_file_active(file_id)
+        user_content = [
+            {"type": "input_video", "file_id": file_id},
+            {"type": "input_text", "text": text},
+        ]
+        input_msgs = []
+        if system:
+            input_msgs.append({"role": "system",
+                               "content": [{"type": "input_text", "text": system}]})
+        input_msgs.append({"role": "user", "content": user_content})
+        body = {
+            "model": MODEL_VLM,
+            "input": input_msgs,
+            "max_output_tokens": max_tokens,
+        }
+        raw = _http_post(f"{get_ark_base()}/responses", body, timeout=600)
+        answer = _responses_extract_text(raw)
+        # 归一成 chat/completions 形状，保持调用方 raw["choices"][0]["message"]["content"] 不变
+        normalized = {
+            "choices": [{"message": {"content": answer}}],
+            "_responses_raw": raw,
+            "_via": "files_api",
+        }
+        return {"raw": normalized, "body": body}
+    finally:
+        if file_id:
+            try:
+                delete_file_ark(file_id)
+            except Exception:
+                pass  # 清理失败不影响主流程，文件会按 expire_at 自动过期
+
+
+# base64 后会膨胀 4/3，chat/completions 网关上限约 50MB，
+# 原文件 > 35MB 时 base64 后逼近上限，直接走 Files API 更稳。
+_VIDEO_INLINE_MAX_BYTES = 35 * 1024 * 1024
+
+
 def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
                             temperature: float = 0.1, fps: float = 1.0,
                             system: Optional[str] = None) -> dict:
     """Doubao Seed 2.0 pro 直接理解视频（不抽帧）。
-    video 可以是本地路径（自动 base64）或 https URL（直接传）。
+    video 可以是本地路径或 https URL。
+    本地文件 ≤35MB：base64 内嵌走 chat/completions（轻量）。
+    本地文件 >35MB：自动走 Files API + Responses API（官方大文件方案，上限 512MB），
+        否则 base64 内嵌会被网关拒收（Broken pipe / 413）。
     system: 可选系统提示（设定 VLM 的角色/输出格式）。
     """
+    if not video.startswith(("http://", "https://")):
+        p = Path(video)
+        if p.exists() and p.stat().st_size > _VIDEO_INLINE_MAX_BYTES:
+            return _video_understand_via_files(video, text, fps, system, max_tokens)
+
     if video.startswith(("http://", "https://")):
         video_url = video
     else:
@@ -221,7 +377,8 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
         "temperature": temperature,
     }
     
-    raw = _http_post(f"{get_ark_base()}/chat/completions", body)
+    # 视频原生理解（推理模型）单次推理常 >180s，对齐大文件路径用 600s 超时。
+    raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=600)
     return {"raw": raw, "body": body}
 
 
