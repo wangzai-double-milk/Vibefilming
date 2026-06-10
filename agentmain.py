@@ -373,20 +373,63 @@ if __name__ == '__main__':
                 except Exception as e: print(f'[Reflect] on_done error: {e}')
             if getattr(mod, 'ONCE', False): print('[Reflect] ONCE=True, exiting.'); break
     else:
-        try: import readline
-        except Exception: pass
         agent.inc_out = True
+        # 输入读取器：优先 prompt_toolkit（Enter 发送 / Alt+Enter 换行 / 多行粘贴不截断 / 历史），
+        # 不可用时回退到内置 input()。
+        read_user_input = None
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                from prompt_toolkit import PromptSession
+                from prompt_toolkit.key_binding import KeyBindings
+                from prompt_toolkit.history import FileHistory
+                _kb = KeyBindings()
+
+                @_kb.add('enter')
+                def _(event): event.current_buffer.validate_and_handle()  # Enter 发送
+
+                @_kb.add('escape', 'enter')
+                def _(event): event.current_buffer.insert_text('\n')      # Alt/Esc+Enter 换行
+
+                @_kb.add('c-j')
+                def _(event): event.current_buffer.insert_text('\n')      # Ctrl+J 换行
+
+                _hist = os.path.join(script_dir, 'temp', '.cli_history')
+                os.makedirs(os.path.dirname(_hist), exist_ok=True)
+                _session = PromptSession(multiline=True, key_bindings=_kb,
+                                         history=FileHistory(_hist))
+                def read_user_input(): return _session.prompt('> ')
+            except Exception:
+                read_user_input = None
+        if read_user_input is None:
+            try: import readline
+            except Exception: pass
+            def read_user_input(): return input('> ')
+
         if sys.stdout.isatty():
             try: model = agent.get_llm_name(model=True) or '?'
             except Exception: model = '?'
             try:
                 sys.stdout.write(f'\x1b[92m✦\x1b[0m \x1b[1mVibeFilming\x1b[0m '
-                                 f'\x1b[90m· cli · model:\x1b[0m {model}\n')
+                                 f'\x1b[90m· cli · model:\x1b[0m {model}\n'
+                                 f'\x1b[90m  (Enter 发送 · Ctrl+J 换行 · Ctrl+C 两次或 Ctrl+D 退出)\x1b[0m\n')
                 sys.stdout.flush()
             except Exception: pass
+        _last_sigint = [0.0]   # 上次在输入态按 Ctrl+C 的时间戳，用于"连按两次退出"
         while True:
-            q = input('> ').strip()
+            try:
+                q = read_user_input().strip()
+            except EOFError:
+                break          # Ctrl-D 退出
+            except KeyboardInterrupt:
+                # Claude Code 风格：输入态单次 Ctrl+C 清空并提示，2 秒内再按一次退出
+                now = time.time()
+                if now - _last_sigint[0] < 2:
+                    break
+                _last_sigint[0] = now
+                print('\x1b[90m(再次按 Ctrl+C 退出)\x1b[0m')
+                continue
             if not q: continue
+            _last_sigint[0] = 0.0   # 有效输入后重置计数
             try:
                 dq = agent.put_task(q, source='user')
                 while True:
