@@ -858,9 +858,10 @@ def _burn_subtitle(handler, args):
 
 @film_tool(
     name="vlm_understand",
-    desc="开放式视觉理解：自己写 question，Doubao Seed 2.0 pro 回答。视频走原生理解（不抽帧），图片走多图理解。结果落到 reviews/<name>.json。**审片场景的提问规范、决策树、提问模板详见 skills/skill_video/SKILL.md，调用前必读**",
+    desc="开放式视觉理解：自己写 question，Doubao Seed 2.0 pro 回答。视频走原生理解（不抽帧），图片走多图理解。结果落到 reviews/<name>.json。**审 video 传 video，审图片传 images（二选一，至少传一个）**。**审片场景的提问规范、决策树、提问模板详见 skills/skill_video/SKILL.md，调用前必读**",
     params={
-        "clip": {"description": "视频路径（str），或多张图片路径列表（array，对比/多帧审查时用）"},
+        "video": {"type": str, "description": "[审视频时传] 单个视频路径。与 images 二选一"},
+        "images": {"type": "array", "items": {"type": "string"}, "description": "[审图片时传] 一张或多张图片路径（对比/多帧审查时传多张）。与 video 二选一", "default": None},
         "question": {"type": str, "description": "你想让 VLM 回答的问题，越具体越好；审片场景按 skills/skill_video/SKILL.md 模板写"},
         "system": {"type": str, "description": "[可选] 系统提示，设定 VLM 角色/输出格式（如 '你是严格的影视审片导演，只输出 JSON'）"},
         "mode": {"type": str, "enum": ["auto", "video", "frames"], "default": "auto", "description": "auto=视频走原生理解、图片走多图；frames=强制抽帧"},
@@ -870,7 +871,7 @@ def _burn_subtitle(handler, args):
         "temperature": {"type": float, "default": 0.1},
         "name": {"type": str, "description": "归档文件名（不含扩展名）。**审片场景必须按规范命名**，便于事后翻查：审 entity 视图用 `review_entity_<entity名>_<view名>`（如 review_entity_dancer_girl_front）；审单镜头视频用 `review_shot_<shot_id>`（如 review_shot_s01）；审合成成片用 `review_compose_v<版本号>`（如 review_compose_v1）；非审片场景才用默认 understand 前缀", "default": "understand"},
     },
-    required=["clip", "question"],
+    required=["question"],
 )
 def _vlm_understand(handler, args):
     """开放式视觉理解：你自己写 question，VLM（Seed 2.0 pro）回答。
@@ -889,23 +890,29 @@ def _vlm_understand(handler, args):
     if pid:
         ws.bump_budget(pid, "vlm", 1)
 
-    clip = args["clip"]
+    video = args.get("video")
+    images = args.get("images")
     question = args["question"]
     fps = float(args.get("fps", 1.0))
     name = args.get("name", f"understand_{int(time.time())}")
     system = args.get("system")
     max_frames = int(args.get("max_frames", 16))
 
-    # clip 支持单路径（str）或多图列表（list）——多图列表强制走图片模式
-    clip_is_list = isinstance(clip, list)
-    _VIDEO_SUFFIX = (".mp4", ".mov", ".avi", ".mkv", ".webm")
-    # 单元素列表里若是视频文件 → 解包成单路径，走视频原生理解（doubao-seed-2.0-pro 全模态，不抽帧）
-    if clip_is_list and len(clip) == 1 and Path(clip[0]).suffix.lower() in _VIDEO_SUFFIX:
-        clip = clip[0]
+    # video / images 二选一：传 video 走视频原生理解，传 images 走多图理解
+    if video and images:
+        raise ValueError("video 与 images 只能二选一，不要同时传")
+    if not video and not images:
+        raise ValueError("必须传 video（视频路径）或 images（图片路径列表）其一")
+    if video:
+        clip = video
         clip_is_list = False
-    first = clip[0] if clip_is_list else clip
-    suffix = Path(first).suffix.lower()
-    is_video = (not clip_is_list) and suffix in _VIDEO_SUFFIX
+        is_video = True
+    else:
+        # images 容错：允许误传单个字符串
+        imgs = images if isinstance(images, list) else [images]
+        clip = imgs
+        clip_is_list = True
+        is_video = False
 
     if is_video and args.get("mode", "auto") != "frames":
         try:
@@ -976,7 +983,8 @@ def _vlm_understand(handler, args):
         out.parent.mkdir(parents=True, exist_ok=True)
         archive = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "clip": clip, "question": question, "answer": answer,
+            "video": video, "images": images,
+            "question": question, "answer": answer,
         }
         if fallback_reason:
             archive["fallback"] = fallback_reason
@@ -986,7 +994,8 @@ def _vlm_understand(handler, args):
         "via_tool": "vlm_understand",
         "modality": "video" if is_video else "image",
         "name": name,
-        "clip": clip,
+        "video": video,
+        "images": images,
         "question": question,
         "answer": answer,
         "fps": int(args.get("fps", 1)),
