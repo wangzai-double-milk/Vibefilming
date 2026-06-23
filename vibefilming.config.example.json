@@ -4,7 +4,7 @@
     "api_base": "https://ark.cn-beijing.volces.com/api/v3",
     "models": {
       "text": "deepseek-v4-pro-260425",
-      "vlm": "doubao-seed-2-0-pro-260215",
+      "vlm": "doubao-seed-2-1-pro-260628",
       "image": "doubao-seedream-5-0-260128",
       "video": "doubao-seedance-2-0-260128"
     }

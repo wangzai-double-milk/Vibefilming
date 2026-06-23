@@ -222,16 +222,35 @@ def _resolve_reference_images(handler, args) -> tuple:
     """收集 reference_images（url 列表，可含字符串或 {url} dict）给 Seedance 当多模态参考。
     返回 (urls, sources)：urls 是纯 url 列表；sources 是每张图来源摘要（审计用）。
     """
+    def normalize_ref(ref: str) -> str:
+        s = str(ref).strip()
+        if s.startswith(("http://", "https://", "data:")):
+            return s
+        p = Path(s)
+        if p.exists():
+            return str(p.resolve())
+        # Agent 常会在项目目录语境下写 entities/foo.png / shots/foo.png。
+        # 工具进程的 cwd 不一定是项目目录，这里用 active project 做一次兜底补全。
+        if not p.is_absolute():
+            pid = _active_pid(handler)
+            if pid:
+                candidate = ws.project_dir(pid) / p
+                if candidate.exists():
+                    return str(candidate.resolve())
+        return s
+
     urls = []
     sources = []
     raw_imgs = args.get("reference_images") or []
     for x in raw_imgs:
         if isinstance(x, str):
-            urls.append(x)
-            sources.append({"url": x, "from": "raw_arg"})
+            url = normalize_ref(x)
+            urls.append(url)
+            sources.append({"url": url, "input": x, "from": "raw_arg"})
         elif isinstance(x, dict) and x.get("url"):
-            urls.append(x["url"])
-            sources.append({"url": x["url"], "from": "raw_arg_dict"})
+            url = normalize_ref(x["url"])
+            urls.append(url)
+            sources.append({"url": url, "input": x["url"], "from": "raw_arg_dict"})
     return urls, sources
 
 
@@ -624,20 +643,101 @@ def _video_portrait(handler, args):
 
 # ============== 音频 ==============
 @film_tool(
-    name="audio_amix",
-    desc="把 BGM 音频混入视频原音轨。bgm_volume 一般 0.1-0.3 避免压过对白",
+    name="audio_process",
+    desc=(
+        "统一音频/音轨处理入口。用 action 选择原子动作："
+        "add_silence=给视频补静音轨；strip=移除视频音轨；extract=抽取视频音轨；"
+        "normalize=响度标准化；fade=音频淡入淡出；fit_duration=音频循环/补静音适配时长；"
+        "set_audio=用指定音频替换视频音轨；amix=把 BGM 混入视频原音轨。"
+        "这是纯执行工具，不负责选择配乐/转场/剪辑策略。"
+    ),
     params={
-        "base_video": str,
-        "bgm_audio": str,
-        "name": str,
-        "bgm_volume": {"type": float, "default": 0.2},
+        "action": {
+            "type": str,
+            "enum": ["add_silence", "strip", "extract", "normalize", "fade", "fit_duration", "set_audio", "amix"],
+            "description": "要执行的音频处理动作",
+        },
+        "name": {"type": str, "description": "输出文件名（不含扩展名；视频输出默认 mp4，音频输出按 ext）"},
+        "video": {"type": str, "description": "视频路径。add_silence/strip/extract/set_audio 使用"},
+        "input_media": {"type": str, "description": "音频或视频路径。normalize 使用"},
+        "audio": {"type": str, "description": "音频路径。fade/fit_duration/set_audio 使用"},
+        "base_video": {"type": str, "description": "基础视频路径。amix 使用"},
+        "bgm_audio": {"type": str, "description": "BGM 音频路径。amix 使用"},
+        "ext": {"type": str, "enum": ["mp4", "mp3", "wav", "m4a"], "default": "mp4"},
+        "duration": {"type": float, "description": "fit_duration 的目标秒数；或 set_audio/amix 的时长策略见 duration_mode"},
+        "duration_mode": {"type": str, "enum": ["first", "shortest", "longest"], "default": "first"},
+        "fit_mode": {"type": str, "enum": ["loop", "pad"], "default": "loop"},
+        "fade_in": {"type": float, "default": 0.0},
+        "fade_out": {"type": float, "default": 0.0},
+        "total_duration": {"type": float, "description": "fade 的总时长；不传会探测"},
+        "audio_volume": {"type": float, "description": "set_audio 的替换音轨音量倍率", "default": 1.0},
+        "bgm_volume": {"type": float, "description": "amix 的 BGM 音量倍率", "default": 0.2},
+        "base_volume": {"type": float, "description": "amix 的原视频音量倍率", "default": 1.0},
+        "sample_rate": {"type": int, "default": 44100},
+        "target_i": {"type": float, "description": "normalize 目标综合响度 LUFS", "default": -16.0},
+        "target_tp": {"type": float, "description": "normalize 目标真峰值 dBTP", "default": -1.5},
+        "target_lra": {"type": float, "description": "normalize 目标响度范围", "default": 11.0},
     },
-    required=["base_video", "bgm_audio", "name"],
+    required=["action", "name"],
 )
-def _audio_amix(handler, args):
-    save = _project_path(handler, "composed", f"{args.get('name', 'amix')}.mp4")
-    return sdk.audio_amix(args["base_video"], args["bgm_audio"], save,
-                          bgm_volume=float(args.get("bgm_volume", 0.2)))
+def _audio_process(handler, args):
+    action = args["action"]
+    name = args.get("name", action)
+
+    if action == "add_silence":
+        save = _project_path(handler, "composed", f"{name}.mp4")
+        return sdk.video_add_silence(args["video"], save,
+                                     sample_rate=int(args.get("sample_rate", 44100)))
+
+    if action == "strip":
+        save = _project_path(handler, "composed", f"{name}.mp4")
+        return sdk.audio_strip(args["video"], save)
+
+    if action == "extract":
+        ext = args.get("ext", "mp3")
+        save = _project_path(handler, "audios", f"{name}.{ext}")
+        return sdk.audio_extract(args["video"], save)
+
+    if action == "normalize":
+        ext = args.get("ext", "mp4")
+        subdir = "composed" if ext == "mp4" else "audios"
+        save = _project_path(handler, subdir, f"{name}.{ext}")
+        return sdk.audio_normalize(args["input_media"], save,
+                                   target_i=float(args.get("target_i", -16.0)),
+                                   target_tp=float(args.get("target_tp", -1.5)),
+                                   target_lra=float(args.get("target_lra", 11.0)))
+
+    if action == "fade":
+        ext = args.get("ext", "mp3")
+        save = _project_path(handler, "audios", f"{name}.{ext}")
+        return sdk.audio_fade(args["audio"], save,
+                              fade_in=float(args.get("fade_in", 0.5)),
+                              fade_out=float(args.get("fade_out", 0.5)),
+                              total_duration=args.get("total_duration"))
+
+    if action == "fit_duration":
+        ext = args.get("ext", "mp3")
+        save = _project_path(handler, "audios", f"{name}.{ext}")
+        return sdk.audio_fit_duration(args["audio"], save,
+                                      duration=float(args["duration"]),
+                                      mode=args.get("fit_mode", "loop"),
+                                      fade_in=float(args.get("fade_in", 0.0)),
+                                      fade_out=float(args.get("fade_out", 0.0)))
+
+    if action == "set_audio":
+        save = _project_path(handler, "composed", f"{name}.mp4")
+        return sdk.video_set_audio(args["video"], args["audio"], save,
+                                   audio_volume=float(args.get("audio_volume", 1.0)),
+                                   duration=args.get("duration_mode", "shortest"))
+
+    if action == "amix":
+        save = _project_path(handler, "composed", f"{name}.mp4")
+        return sdk.audio_amix(args["base_video"], args["bgm_audio"], save,
+                              bgm_volume=float(args.get("bgm_volume", 0.2)),
+                              base_volume=float(args.get("base_volume", 1.0)),
+                              duration=args.get("duration_mode", "first"))
+
+    raise ValueError(f"未知 audio_process action: {action}")
 
 
 @film_tool(

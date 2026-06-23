@@ -39,6 +39,67 @@ description: 做视频/短片/广告/MV，**任何一次 gen_image / gen_video_t
 
 任意一条不过 → **不许调 Seedance/Seedream**，先改 prompt。
 
+## 0.5 结构化拍摄表 → 最终 prompt 编译闸门（视频调用前必过）
+
+如果当前项目存在 `storyboard.json`、`shooting_plan.json`、片段表，或技能流程中已经产出 `must_keep / key_info_shots / director_beats / audio_plan`，那么最终 `gen_video_t2v` prompt 不能自由改写，必须按结构化拍摄表编译。这里是调用前第一道硬闸门，优先级高于下面 7 步 checklist。
+
+### 必须逐项消费的字段
+
+| 拍摄表字段 | 最终 prompt 中必须怎么体现 | 不合格写法 |
+|---|---|---|
+| `must_keep.screen_text[]` | 每一句都逐字进入 prompt，写成"屏幕/纸条/手机/日历大特写，文字清晰可读：{原文}" | "出现一行行文字"、"弹出提示" |
+| `must_keep.dialogue[]` | 每句对白都逐字进入 prompt，用 `{}` 包起来，并写明说话人和音色 | "他说了几句"、"低声询问" |
+| `must_keep.key_visual_info[]` | 每条都对应一个明确镜头或动作特写 | "发现异常"、"感觉不对" |
+| `must_keep.sound_cues[]` | 每条都用 `<>` 写成音效或环境声 | "气氛紧张" |
+| `key_info_shots[]` | 每条都要能在 prompt 里找到对应镜头 | 只写在分镜文件里，prompt 不写 |
+| `director_beats[]` | 按 beat 顺序展开成"镜头一/镜头二/镜头三..." | 把多个 beat 合成一句概述 |
+| `audio_plan.generate_audio` | 和工具参数完全一致；有 `{台词}` 且要原生口型时必须为 `true` | prompt 有台词但工具参数是 `false` |
+
+### 编译规则
+
+1. 从 `director_beats` 按顺序生成 prompt，不允许跳 beat、不允许合并关键 beat。
+2. 遇到 `visible_text`，必须逐字写入 prompt；文字类信息要加"清晰可读"，并指定载体：屏幕、纸条、手机、日历、弹窗等。
+3. 遇到 `dialogue`，必须写成 `角色名以[完整音色描述]说道{逐字台词}`；同一角色每段都重复完整音色描述，不能写"音色同上"。
+4. 遇到 `sound` 或 `sound_cues`，必须写成 `<声音内容>`；不要把音效写成普通氛围描述。
+5. 最终 prompt 生成后，必须做字符串级核对：`must_keep.screen_text` 与 `must_keep.dialogue.text` 中的每一句，是否逐字出现在 prompt 中。缺一句就不许调用。
+6. 如果当前镜头无对白，`generate_audio=false`，且 prompt 末尾只能写"无背景音乐，仅保留环境音效"或"无任何音频"；不要写"人物对白"。
+7. 如果当前镜头有对白并要求 Seedance 生成原生口型，`generate_audio=true`，prompt 末尾必须写"无背景音乐，仅保留环境音效与人物对白"。
+8. 如果视频模型可能生成不清楚文字，关键屏幕/纸条/手机文字必须先做成清晰关键帧或参考图，再作为参考素材传入；不能只靠一句 prompt 赌模型写对。
+
+### 禁止调用示例
+
+如果拍摄表中有：
+
+```json
+"screen_text": ["你没修。你只是把报错日志删了。"]
+```
+
+最终 prompt 写成下面这样，一律禁止调用：
+
+```text
+镜头二：特写屏幕，代码编辑器里自动出现一行行白色文字。
+```
+
+必须改成：
+
+```text
+镜头二：电脑屏幕大特写，代码编辑器黑底白字逐行自动输入，文字清晰可读：「你没修。你只是把报错日志删了。」
+```
+
+如果拍摄表中有：
+
+```json
+"dialogue": [{"speaker": "林深", "text": "...谁？", "voice": "低沉、略带沙哑，紧张时气声明显"}]
+```
+
+最终 prompt 必须包含：
+
+```text
+林深以低沉、略带沙哑、紧张时气声明显的声音颤抖说道{...谁？}
+```
+
+并且工具参数必须 `generate_audio=true`。否则就是对白丢失或"张嘴无声"风险。
+
 > ⭐ **痕迹可查铁律** ⭐
 > 每个 project 在第一次出 prompt（`gen_video_t2v` / `gen_image` / `gen_audio_bgm`）之前，**必须**有一条 `file_read("skills/skill_prompt_engineering/SKILL.md")` 落到 `logs/tool_calls.jsonl` 里。如果 tool_calls.jsonl 一条 `file_read` 都没有就直接出片 —— 等于"心里走过 7 步"自欺欺人，**视为违规**。
 > - 已踩坑①：p20260601_133747_ 跳舞项目 整个工具调用日志没有一条 file_read，PE 7 步形同虚设。
@@ -159,9 +220,10 @@ Seedance 靠括号识别音频意图——**不写括号 = 模型自己猜，靠
 
 ### 默认策略（本项目）
 
-- **大多数场景**：`generate_audio=False` —— 视频纯画面，对白/音效后期 `tts` + `audio_amix` 接进去（音质更可控、不漏 BGM）
-- **必须 generate_audio=True 的场景**（极少）：要 Seedance 生成原生唇形对口型对白时——这时**仍然必须在 prompt 末尾追加禁令句**作为闸门 2
-- **A-4 MV 模式**：BGM 就是项目本体（外部 BGM 转黑屏视频做参考），完全跳过本节
+- **无对白镜头**：`generate_audio=False`，prompt 末尾写 `无背景音乐，仅保留环境音效`；如果连环境音都不需要，写 `无任何音频`。
+- **有对白且需要人物口型/原生说话**：`generate_audio=True`，每句对白必须用 `{逐字台词}` 写入 prompt，并写明说话人和完整音色；prompt 末尾写 `无背景音乐，仅保留环境音效与人物对白`。
+- **有对白但明确走后期 TTS**：不要让视频人物出现说话口型，不要写"说/低语/询问/回答/讨论"等口型语义词；画面只拍反应或动作，后期再接 TTS。
+- **A-4 MV 模式**：BGM 就是项目本体（外部 BGM 转黑屏视频做参考），完全跳过本节。
 
 ### prompt 末尾禁令句模板（闸门 2）
 
