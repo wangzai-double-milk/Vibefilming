@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -167,6 +166,22 @@ def _download(url: str, save_path: Path, timeout: int = 180) -> Path:
     return save_path
 
 
+def _image_mime_from_bytes(data: bytes, fallback_suffix: str) -> str:
+    """根据文件头判断真实图片 MIME，避免 .png 文件里实际是 JPEG 时被接口拒绝。"""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    suffix = (fallback_suffix or "png").lower().lstrip(".")
+    if suffix == "jpg":
+        suffix = "jpeg"
+    return f"image/{suffix}"
+
+
 def _img_to_url(ref: str) -> str:
     """把图片参考归一成模型能直接吃的形式。
     - http(s)/data: 原样返回；
@@ -182,11 +197,10 @@ def _img_to_url(ref: str) -> str:
         return s
     p = Path(s)
     if p.exists():
-        suffix = p.suffix.lower().lstrip(".") or "png"
-        if suffix == "jpg":
-            suffix = "jpeg"
-        b64 = base64.b64encode(p.read_bytes()).decode()
-        return f"data:image/{suffix};base64,{b64}"
+        data = p.read_bytes()
+        mime = _image_mime_from_bytes(data, p.suffix)
+        b64 = base64.b64encode(data).decode()
+        return f"{mime};base64,{b64}".replace("image/", "data:image/", 1)
     return s
 
 
@@ -205,14 +219,13 @@ def doubao_chat(messages: list, max_tokens: int = 4096, temperature: float = 0.7
 
 def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
                temperature: float = 0.1, system: Optional[str] = None) -> dict:
-    """Doubao VLM。image_paths 是本地 jpg/png 列表，会 base64 内嵌。
+    """Doubao VLM。image_paths 是本地图片路径或 URL，会归一成模型可读 image_url。
     system: 可选系统提示（设定 VLM 的角色/输出格式）。"""
     image_msgs = []
     for p in image_paths:
-        b64 = base64.b64encode(Path(p).read_bytes()).decode()
         image_msgs.append({
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            "image_url": {"url": _img_to_url(str(p))},
         })
     messages = []
     if system:
@@ -229,7 +242,9 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
         "temperature": temperature,
     }
     
-    raw = _http_post(f"{get_ark_base()}/chat/completions", body)
+    # Seed 2.1 Pro 图像理解在复杂审查题上可能超过默认 180s；
+    # 对齐视频理解路径，给 VLM 审图保留更长推理时间。
+    raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=600)
     return {"raw": raw, "body": body}
 
 
@@ -517,6 +532,60 @@ def _run_ffmpeg(args: list, timeout: int = 300) -> dict:
     return {"ok": True}
 
 
+def _find_ffprobe() -> Optional[str]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        candidate = FFMPEG.replace("ffmpeg", "ffprobe")
+        if os.path.exists(candidate):
+            ffprobe = candidate
+    return ffprobe
+
+
+def has_audio_stream(media: str) -> bool:
+    """判断媒体是否包含音轨。优先 ffprobe；失败时回退解析 ffmpeg stderr。"""
+    ffprobe = _find_ffprobe()
+    if ffprobe:
+        try:
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=index", "-of", "csv=p=0", str(media)],
+                capture_output=True, text=True, timeout=15,
+            )
+            return bool(r.stdout.strip())
+        except Exception:
+            pass
+    try:
+        r = subprocess.run(
+            [FFMPEG, "-hide_banner", "-i", str(media)],
+            capture_output=True, text=True, timeout=30,
+        )
+        return "Audio:" in r.stderr
+    except Exception:
+        return False
+
+
+def _audio_codec_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".mp3":
+        return "libmp3lame"
+    if suffix == ".wav":
+        return "pcm_s16le"
+    return "aac"
+
+
+def _audio_fade_filter(fade_in: float = 0.0, fade_out: float = 0.0,
+                       duration: Optional[float] = None) -> str:
+    filters = []
+    if fade_in and fade_in > 0:
+        filters.append(f"afade=t=in:st=0:d={fade_in}")
+    if fade_out and fade_out > 0:
+        if duration is None:
+            raise ValueError("fade_out > 0 时必须提供 duration")
+        start = max(0.0, float(duration) - float(fade_out))
+        filters.append(f"afade=t=out:st={start}:d={fade_out}")
+    return ",".join(filters) if filters else "anull"
+
+
 def video_concat(clips: list, save_path: Path) -> dict:
     """硬拼接（无重编码）。要求所有 clip 编码参数一致。"""
     save_path = Path(save_path)
@@ -540,15 +609,28 @@ def video_crossfade(clip_a: str, clip_b: str, save_path: Path,
     transition: xfade 转场类型（fade/wipeleft/slideup/circleopen/dissolve 等，见 ffmpeg xfade 文档）。"""
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    _run_ffmpeg([
-        "-i", str(clip_a), "-i", str(clip_b),
+    args = ["-i", str(clip_a), "-i", str(clip_b)]
+    audio_a = "[0:a]"
+    audio_b = "[1:a]"
+    next_input = 2
+    if not has_audio_stream(clip_a):
+        args.extend(["-f", "lavfi", "-t", str(probe_duration(clip_a)),
+                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
+        audio_a = f"[{next_input}:a]"
+        next_input += 1
+    if not has_audio_stream(clip_b):
+        args.extend(["-f", "lavfi", "-t", str(probe_duration(clip_b)),
+                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
+        audio_b = f"[{next_input}:a]"
+    args.extend([
         "-filter_complex",
         f"[0:v][1:v]xfade=transition={transition}:duration={duration}:offset={offset}[v];"
-        f"[0:a][1:a]acrossfade=d={duration}[a]",
+        f"{audio_a}{audio_b}acrossfade=d={duration}[a]",
         "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", preset,
         str(save_path),
     ])
+    _run_ffmpeg(args)
     return {"path": str(save_path)}
 
 
@@ -581,14 +663,23 @@ def video_speed(clip: str, save_path: Path, factor: float,
     tempos.append(f"atempo={rem}")
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    _run_ffmpeg([
-        "-i", str(clip),
-        "-filter_complex",
-        f"[0:v]setpts={pts}*PTS[v];[0:a]{','.join(tempos)}[a]",
-        "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", preset,
-        str(save_path),
-    ])
+    if has_audio_stream(clip):
+        _run_ffmpeg([
+            "-i", str(clip),
+            "-filter_complex",
+            f"[0:v]setpts={pts}*PTS[v];[0:a]{','.join(tempos)}[a]",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", preset,
+            str(save_path),
+        ])
+    else:
+        _run_ffmpeg([
+            "-i", str(clip),
+            "-vf", f"setpts={pts}*PTS",
+            "-c:v", "libx264", "-preset", preset,
+            "-an",
+            str(save_path),
+        ])
     return {"path": str(save_path)}
 
 
@@ -625,15 +716,21 @@ def video_fade(clip: str, save_path: Path, fade_in: float = 0.5,
     fade_out_start = max(0, total_duration - fade_out)
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    _run_ffmpeg([
+    args = [
         "-i", str(clip),
         "-vf",
         f"fade=t=in:st=0:d={fade_in},fade=t=out:st={fade_out_start}:d={fade_out}",
-        "-af",
-        f"afade=t=in:st=0:d={fade_in},afade=t=out:st={fade_out_start}:d={fade_out}",
         "-c:v", "libx264", "-preset", preset,
-        str(save_path),
-    ])
+    ]
+    if has_audio_stream(clip):
+        args.extend([
+            "-af",
+            f"afade=t=in:st=0:d={fade_in},afade=t=out:st={fade_out_start}:d={fade_out}",
+        ])
+    else:
+        args.append("-an")
+    args.append(str(save_path))
+    _run_ffmpeg(args)
     return {"path": str(save_path)}
 
 
@@ -652,16 +749,163 @@ def video_portrait(clip: str, save_path: Path,
     return {"path": str(save_path)}
 
 
+def audio_strip(video: str, save_path: Path) -> dict:
+    """移除视频所有音轨，只保留画面。"""
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    _run_ffmpeg([
+        "-i", str(video),
+        "-map", "0:v:0",
+        "-c:v", "copy",
+        "-an",
+        str(save_path),
+    ])
+    return {"path": str(save_path)}
+
+
+def video_add_silence(video: str, save_path: Path,
+                      sample_rate: int = 44100) -> dict:
+    """给视频添加一条静音 AAC 音轨。若原视频已有音轨，会被静音轨替换。"""
+    duration = probe_duration(video)
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    _run_ffmpeg([
+        "-i", str(video),
+        "-f", "lavfi", "-t", str(duration),
+        "-i", f"anullsrc=channel_layout=stereo:sample_rate={sample_rate}",
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        str(save_path),
+    ])
+    return {"path": str(save_path), "duration": duration}
+
+
+def audio_extract(video: str, save_path: Path) -> dict:
+    """从视频中抽取音轨。"""
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    codec = _audio_codec_for_path(save_path)
+    _run_ffmpeg([
+        "-i", str(video),
+        "-vn",
+        "-map", "0:a:0",
+        "-c:a", codec,
+        str(save_path),
+    ])
+    return {"path": str(save_path)}
+
+
+def audio_normalize(input_media: str, save_path: Path, target_i: float = -16.0,
+                    target_tp: float = -1.5, target_lra: float = 11.0) -> dict:
+    """响度标准化。支持音频文件或带音轨视频；视频会保留原视频流。"""
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    codec = _audio_codec_for_path(save_path)
+    _run_ffmpeg([
+        "-i", str(input_media),
+        "-filter_complex",
+        f"[0:a]loudnorm=I={target_i}:TP={target_tp}:LRA={target_lra}[a]",
+        "-map", "0:v?",
+        "-map", "[a]",
+        "-c:v", "copy",
+        "-c:a", codec,
+        str(save_path),
+    ])
+    return {"path": str(save_path)}
+
+
+def audio_fade(audio: str, save_path: Path, fade_in: float = 0.5,
+               fade_out: float = 0.5,
+               total_duration: Optional[float] = None) -> dict:
+    """给音频做淡入淡出。total_duration 不传时自动探测。"""
+    if total_duration is None:
+        total_duration = probe_duration(audio)
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    codec = _audio_codec_for_path(save_path)
+    _run_ffmpeg([
+        "-i", str(audio),
+        "-vn",
+        "-af", _audio_fade_filter(fade_in, fade_out, total_duration),
+        "-c:a", codec,
+        str(save_path),
+    ])
+    return {"path": str(save_path), "duration": total_duration}
+
+
+def audio_fit_duration(audio: str, save_path: Path, duration: float,
+                       mode: str = "loop", fade_in: float = 0.0,
+                       fade_out: float = 0.0) -> dict:
+    """把音频适配到指定时长。mode=loop 循环裁切；mode=pad 不循环、不足补静音。"""
+    if duration <= 0:
+        raise ValueError("duration 必须 > 0")
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    codec = _audio_codec_for_path(save_path)
+    af = f"atrim=0:{duration},asetpts=PTS-STARTPTS"
+    fade = _audio_fade_filter(fade_in, fade_out, duration)
+    if fade != "anull":
+        af = f"{af},{fade}"
+    args = []
+    if mode == "loop":
+        args.extend(["-stream_loop", "-1"])
+    elif mode != "pad":
+        raise ValueError("mode 只支持 loop 或 pad")
+    args.extend([
+        "-i", str(audio),
+        "-t", str(duration),
+        "-vn",
+        "-af", f"apad,{af}" if mode == "pad" else af,
+        "-c:a", codec,
+        str(save_path),
+    ])
+    _run_ffmpeg(args)
+    return {"path": str(save_path), "duration": duration, "mode": mode}
+
+
+def video_set_audio(video: str, audio: str, save_path: Path,
+                    audio_volume: float = 1.0,
+                    duration: str = "shortest") -> dict:
+    """用指定音频替换视频音轨。duration=shortest/first/longest。"""
+    if duration not in {"shortest", "first", "longest"}:
+        raise ValueError("duration 只支持 shortest / first / longest")
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    args = [
+        "-i", str(video),
+        "-i", str(audio),
+        "-filter_complex", f"[1:a]volume={audio_volume}[a]",
+        "-map", "0:v:0",
+        "-map", "[a]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+    ]
+    if duration == "first":
+        args.extend(["-t", str(probe_duration(video))])
+    if duration == "shortest":
+        args.append("-shortest")
+    args.append(str(save_path))
+    _run_ffmpeg(args)
+    return {"path": str(save_path)}
+
+
 def audio_amix(base_video: str, bgm_audio: str, save_path: Path,
-               bgm_volume: float = 0.2) -> dict:
+               bgm_volume: float = 0.2, base_volume: float = 1.0,
+               duration: str = "first") -> dict:
     """把 bgm_audio 混进 base_video 的音轨。"""
+    if duration not in {"first", "shortest", "longest"}:
+        raise ValueError("duration 只支持 first / shortest / longest")
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     _run_ffmpeg([
         "-i", str(base_video), "-i", str(bgm_audio),
         "-filter_complex",
+        f"[0:a]volume={base_volume}[base];"
         f"[1:a]volume={bgm_volume}[bgm];"
-        "[0:a][bgm]amix=inputs=2:duration=longest:dropout_transition=0[a]",
+        f"[base][bgm]amix=inputs=2:duration={duration}:dropout_transition=0[a]",
         "-map", "0:v", "-map", "[a]",
         "-c:v", "copy", "-c:a", "aac",
         str(save_path),
@@ -710,11 +954,7 @@ def probe_duration(clip: str) -> float:
     默认值导致 video_fade 等下游计算出畸形 fade_out_start，整段视频黑屏。
     """
     # 1) 先尝试 ffprobe
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        candidate = FFMPEG.replace("ffmpeg", "ffprobe")
-        if os.path.exists(candidate):
-            ffprobe = candidate
+    ffprobe = _find_ffprobe()
     if ffprobe:
         try:
             r = subprocess.run(
