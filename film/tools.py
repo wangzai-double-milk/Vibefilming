@@ -181,7 +181,7 @@ def _project_open(handler, args):
         "name": {"type": str, "description": "产物文件名（不含扩展名）。**参考图（角色/场景/道具，会被 reference_images 引用的）必须以 `ref_` 开头**，会落到 entities/；关键帧等其他图落 shots/"},
         "ref_image_url": {"type": str, "description": "[可选] 单张参考图（图编辑模式）。优先传本地 path（如上一张 gen_image 返回的 path，自动 base64 内嵌、最稳），也支持 http(s) url"},
         "ref_image_urls": {"type": "array", "items": {"type": "string"}, "description": "[可选] 多张参考图（最多 14 张，多图融合模式）。本地 path 或 url 均可，传了优先于 ref_image_url"},
-        "size": {"type": str, "description": "尺寸", "default": "1024x1024"},
+        "size": {"type": str, "description": "尺寸，需 ≥ 360万像素（如 2048x2048、1920x1920），过小会被图像接口拒绝", "default": "2048x2048"},
         "watermark": {"type": bool, "description": "是否加「AI 生成」水印", "default": False},
     },
     required=["prompt", "name"],
@@ -199,7 +199,7 @@ def _gen_image(handler, args):
         ref = refs if len(refs) > 1 else refs[0]
     else:
         ref = args.get("ref_image_url")
-    size = args.get("size", "1024x1024")
+    size = args.get("size", "2048x2048")
     watermark = bool(args.get("watermark", False))
     # 参考图（ref_ 前缀）落 entities/，关键帧等其余图落 shots/——别再混在一起
     subdir = "entities" if name.startswith("ref_") else "shots"

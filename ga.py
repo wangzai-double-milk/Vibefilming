@@ -208,7 +208,7 @@ def _scan_files(base, depth=2):
             if e.is_file(): yield (e.name, e.path)
             elif depth > 0 and e.is_dir(follow_symlinks=False): yield from _scan_files(e.path, depth - 1)
     except (PermissionError, OSError): pass
-def file_read(path, start=1, keyword=None, count=200, show_linenos=True):
+def file_read(path, start=1, keyword=None, count=600, show_linenos=True):
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             stream = ((i, l.rstrip('\r\n')) for i, l in enumerate(f, 1))
