@@ -175,7 +175,7 @@ def _project_open(handler, args):
 # ============== 视觉生成 ==============
 @film_tool(
     name="gen_image",
-    desc="Seedream 文生图 / 图编辑 / 多图融合。带 ref_image_url（单图）或 ref_image_urls（多图，最多14张）即编辑/融合模式。watermark 默认 false（不加水印）。**落盘目录按 name 前缀自动区分**：name 以 `ref_` 开头的参考图（角色三视图/大头照/场景图/道具图）落 entities/，其余（关键帧等）落 shots/。返回 {path, url, name}。角色/道具/场景的参考图也用这个工具生成——怎么用它维护跨镜头一致性（白底三视图 / 面部特写 / 锁参考）见 skills/skill_video/SKILL.md",
+    desc="Seedream 文生图 / 图编辑 / 多图融合。带 ref_image_url（单图）或 ref_image_urls（多图，最多14张）即编辑/融合模式。watermark 默认 false（不加水印）。**落盘目录按 name 前缀自动区分**：name 以 `ref_` 开头的参考图（角色参考图/场景图/道具图）落 entities/，其余（关键帧等）落 shots/。返回 {path, url, name}。角色/道具/场景的参考图也用这个工具生成——角色默认出白底三视图（同一对象正面/侧面/背面同框）来锁定跨镜头一致性，具体出图与锁参考方法见 skills/skill_movie/SKILL.md",
     params={
         "prompt": {"type": str, "description": "图像描述"},
         "name": {"type": str, "description": "产物文件名（不含扩展名）。**参考图（角色/场景/道具，会被 reference_images 引用的）必须以 `ref_` 开头**，会落到 entities/；关键帧等其他图落 shots/"},
@@ -190,7 +190,7 @@ def _gen_image(handler, args):
     """文生图 / 图编辑 / 多图融合（Seedream）。返回 {path, url, name}。
     落盘目录按 name 前缀自动区分：`ref_` 开头的参考图落 entities/，其余落 shots/。
     传 ref_image_urls（数组，最多 14 张）做多图融合；传单张也可。角色/道具/场景的参考图
-    也用这个工具生成——怎么用它维护跨镜头一致性见 skills/skill_video/SKILL.md。"""
+    也用这个工具生成——怎么用它维护跨镜头一致性见 skills/skill_movie/SKILL.md。"""
     prompt = args["prompt"]
     name = args.get("name", f"img_{int(time.time())}")
     # ref：数组优先，兼容单张 ref_image_url
@@ -283,12 +283,12 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
 
 @film_tool(
     name="gen_video_t2v",
-    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审，再把这些图放进 reference_images（**直接传 gen_image 返回的本地 path 即可，无需 url**）。**链式衔接、配乐策略、跨镜头一致性详见 skills/skill_video/SKILL.md**",
+    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审，再把这些图放进 reference_images（**直接传 gen_image 返回的本地 path 即可，无需 url**）。**链式衔接、配乐策略、跨镜头一致性详见 skills/skill_movie/SKILL.md**",
     params={
         "prompt": {"type": str, "description": "视频描述。链式段必须显式承接上段（'承接上段视频，...'）。需要锁首/尾帧画面用文字暗示：'opening frame: ...; ending frame: ...'"},
         "name": {"type": str, "description": "产物文件名（不含扩展名）"},
         "duration": {"type": int, "description": "视频时长 4-15 秒", "minimum": 4, "maximum": 15},
-        "generate_audio": {"type": bool, "description": "Seedance 2.0 原生同步音频。配乐策略见 skills/skill_video/SKILL.md", "default": False},
+        "generate_audio": {"type": bool, "description": "Seedance 2.0 原生同步音频。配乐策略见 skills/skill_movie/SKILL.md", "default": False},
         "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图列表（最多 9 张）。把本 shot 角色/道具/场景的参考图都放进来锁一致性。**强烈建议直接传 gen_image 返回的本地 path**（短、好转抄，工具会自动 base64 内嵌）；不要转抄那条很长的带签名 url——签名 query 一旦被你截断，Seedance 服务端就会报 resource download failed"},
         "reference_video_url": {"type": str, "description": "[链式段（≥2 段视频中第 N≥2 段）必传] 上一段视频。可传 query_video_task 返回的 video_url（云端 url），也可传 path（本地 mp4 路径，工具会自动反查同名 .url.txt sidecar 取云端 url）。最多 1 段"},
         "resolution": {"type": str, "enum": ["480p", "720p", "1080p"], "default": "720p"},
@@ -366,7 +366,7 @@ _VIDEO_TASK_STARTS = {}
 
 @film_tool(
     name="query_video_task",
-    desc="查询 Seedance 任务状态。默认阻塞等到 succeeded/failed，**自动按 duration 估 ETA + 动态轮询间隔 + 打印进度条**。建议传 duration（视频时长秒数），ETA 会算成 60 + 15 * duration（10s 视频约 210s，15s 视频约 285s）。succeeded 时返回 {path?, video_url}（path: save_name 给了的话；video_url: 云端 url 可直接当下一段 reference_video_url）。同时把 url 写到 <save_name>.url.txt sidecar 方便本地 path 反查。串行 vs 并行调度策略见 skills/skill_video/SKILL.md",
+    desc="查询 Seedance 任务状态。默认阻塞等到 succeeded/failed，**自动按 duration 估 ETA + 动态轮询间隔 + 打印进度条**。建议传 duration（视频时长秒数），ETA 会算成 60 + 15 * duration（10s 视频约 210s，15s 视频约 285s）。succeeded 时返回 {path?, video_url}（path: save_name 给了的话；video_url: 云端 url 可直接当下一段 reference_video_url）。同时把 url 写到 <save_name>.url.txt sidecar 方便本地 path 反查。串行 vs 并行调度策略见 skills/skill_movie/SKILL.md",
     params={
         "task_id": {"type": str, "description": "gen_video_t2v 返回的 task_id"},
         "save_name": {"type": str, "description": "[可选] succeeded 时落盘的文件名（不含扩展名）"},
@@ -765,7 +765,7 @@ def _tts(handler, args):
 
 @film_tool(
     name="gen_audio_bgm",
-    desc="豆包·音乐 GenBGM 生成纯音乐（异步，返回 task_id，需 query_audio_task 轮询）。当前需在 vibefilming.config.json 配置 volc.ak / volc.sk，无 key 会报错。配乐流程详见 skills/skill_video/SKILL.md",
+    desc="豆包·音乐 GenBGM 生成纯音乐（异步，返回 task_id，需 query_audio_task 轮询）。当前需在 vibefilming.config.json 配置 volc.ak / volc.sk，无 key 会报错。配乐流程详见 skills/skill_movie/SKILL.md",
     params={
         "prompt": {"type": str, "description": "音乐风格描述（自然语言写明风格/情绪/乐器/场景，建议 ≥50 字）"},
         "name": str,
@@ -820,7 +820,7 @@ _BGM_TASK_STARTS = {}
 
 @film_tool(
     name="query_audio_task",
-    desc="查询 BGM（gen_audio_bgm）任务状态，跟 query_video_task 对称。默认阻塞轮询到 succeeded/failed。succeeded 时返回 {path?, audio_url}（path: save_name 给了的话落到 audios/<save_name>.mp3）。⚠️ 查 BGM 任务必须用本工具，不要用 query_video_task（那是查 Seedance 视频的，task_id 不通用）。配乐流程详见 skills/skill_video/SKILL.md",
+    desc="查询 BGM（gen_audio_bgm）任务状态，跟 query_video_task 对称。默认阻塞轮询到 succeeded/failed。succeeded 时返回 {path?, audio_url}（path: save_name 给了的话落到 audios/<save_name>.mp3）。⚠️ 查 BGM 任务必须用本工具，不要用 query_video_task（那是查 Seedance 视频的，task_id 不通用）。配乐流程详见 skills/skill_movie/SKILL.md",
     params={
         "task_id": {"type": str, "description": "gen_audio_bgm 返回的 task_id"},
         "save_name": {"type": str, "description": "[可选] succeeded 时落盘的文件名（不含扩展名），落到 audios/<save_name>.mp3"},
@@ -958,11 +958,11 @@ def _burn_subtitle(handler, args):
 
 @film_tool(
     name="vlm_understand",
-    desc="开放式视觉理解：自己写 question，Doubao Seed 2.0 pro 回答。视频走原生理解（不抽帧），图片走多图理解。结果落到 reviews/<name>.json。**审 video 传 video，审图片传 images（二选一，至少传一个）**。**审片场景的提问规范、决策树、提问模板详见 skills/skill_video/SKILL.md，调用前必读**",
+    desc="开放式视觉理解：自己写 question，Doubao Seed 2.0 pro 回答。视频走原生理解（不抽帧），图片走多图理解。结果落到 reviews/<name>.json。**审 video 传 video，审图片传 images（二选一，至少传一个）**。**审片场景的提问规范、决策树、提问模板详见 skills/skill_movie/SKILL.md，调用前必读**",
     params={
         "video": {"type": str, "description": "[审视频时传] 单个视频路径。与 images 二选一"},
         "images": {"type": "array", "items": {"type": "string"}, "description": "[审图片时传] 一张或多张图片路径（对比/多帧审查时传多张）。与 video 二选一", "default": None},
-        "question": {"type": str, "description": "你想让 VLM 回答的问题，越具体越好；审片场景按 skills/skill_video/SKILL.md 模板写"},
+        "question": {"type": str, "description": "你想让 VLM 回答的问题，越具体越好；审片场景按 skills/skill_movie/SKILL.md 模板写"},
         "system": {"type": str, "description": "[可选] 系统提示，设定 VLM 角色/输出格式（如 '你是严格的影视审片导演，只输出 JSON'）"},
         "mode": {"type": str, "enum": ["auto", "video", "frames"], "default": "auto", "description": "auto=视频走原生理解、图片走多图；frames=强制抽帧"},
         "fps": {"type": float, "default": 1.0},
@@ -983,7 +983,7 @@ def _vlm_understand(handler, args):
       - 让 VLM 定位异常时间区间（"第几秒剑消失了"）
       - 让 VLM 对比两版（一次传两个 clip 用图片模式）
 
-    审片场景的提问规范、决策树、提问模板详见 skills/skill_video/SKILL.md，
+    审片场景的提问规范、决策树、提问模板详见 skills/skill_movie/SKILL.md，
     agent 调用前先读 md 自己拼好 question。
     """
     pid = _active_pid(handler)
