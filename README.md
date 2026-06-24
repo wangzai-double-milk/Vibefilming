@@ -376,7 +376,7 @@ projects/<project_id>/
 | 文档 | 内容 |
 |---|---|
 | 📘 [DIRECTOR_GUIDE.md](./DIRECTOR_GUIDE.md) | **导演手册（人话版）**：工具说明 + 想改拍法去哪改 + 0 代码加新技能 |
-| 🎬 [skill_video](./skills/skill_video/SKILL.md) | 影视制作主流程：剧本 → 素材三视图 → 分镜 → 拍摄 → 审片 → 合成 → 配乐 |
+| 🎬 [skill_movie](./skills/skill_movie/SKILL.md) | 影视制作主流程：剧本 → 素材三视图 → 分镜 → 拍摄 → 审片 → 合成 → 配乐 |
 | 🧙 [skill_prompt_engineering](./skills/skill_prompt_engineering/SKILL.md) | 指令工程 7 步 + 5 大常见翻车点 |
 
 ---
