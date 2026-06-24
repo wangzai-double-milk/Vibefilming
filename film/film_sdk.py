@@ -400,7 +400,7 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
 # ============== Seedream（文生图 / 图编辑统一接口）==============
 def gen_image(prompt: str, save_path: Path,
               ref_image_url=None,
-              size: str = "1024x1024",
+              size: str = "2048x2048",
               watermark: bool = False) -> dict:
     """Seedream 4.0 — 文生图 / 图编辑 / 多图融合。返回 {url, path, raw}。
 
