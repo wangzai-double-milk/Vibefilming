@@ -30,4 +30,30 @@ https://github.com/user-attachments/assets/d038992f-3cf5-45e9-9f86-1d34e478019e
 </div>
 
 ### 1.5 所有内容审核通过后，自动合成成片
-[![演示视频]](https://vibe-filming.tos-cn-beijing.volces.com/%E5%A2%A8%E6%9D%80_%E7%BB%88%E7%89%88_v1.mp4)
+从始至终，用户只需要开头的50字要求
+项目演示视频：[视频过大，点击下载播放](https://github.com/wangzai-double-milk/Vibefilming/releases/download/v1-video/_._v1.mp4)
+
+# step 2. 通过对话调整成片
+### 2.1 用户输入
+```text
+人物拿剑的手穿模了，帮我改一下。然后好像转场有点生硬这个也改一下吧。
+```
+<img width="640" alt="image" src="https://github.com/user-attachments/assets/1bfb7d68-81e9-41ca-9a78-021f47aa8b01" />
+
+### 2.2 自动寻找穿模片段
+<img width="640" alt="image" src="https://github.com/user-attachments/assets/6a79a667-4aad-4e33-a1df-fd417100a2ff" />
+<img width="640" alt="image" src="https://github.com/user-attachments/assets/bf7f1777-37cd-45ff-82ca-d6afe11bfefd" />
+
+### 2.3 自动修复关键帧，并且认为触及视频模型上限时，会尝试其他方案
+尝试修复关键帧
+
+<img width="400" alt="image" src="https://github.com/user-attachments/assets/4fe01b83-062d-45e4-8829-0a548fc843c8" />
+<img width="400" alt="image" src="https://github.com/user-attachments/assets/1af7e112-58ee-41a9-aa65-cd80800ed9b2" />
+
+发现受制于模型能力无法解决时，就会采取别的方式：
+更改镜头彻底解决手部问题
+
+<img width="640" alt="image" src="https://github.com/user-attachments/assets/7813c9fd-a545-4ca5-86ec-e75e0947407f" />
+
+### 2.4 重新生成与修复帧相关内容，合成成片
+项目演示视频：[视频过大，点击下载播放](https://github.com/wangzai-double-milk/Vibefilming/releases/download/v1-video/_._v4_bgm.mp4)
