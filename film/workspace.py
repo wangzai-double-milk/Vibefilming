@@ -3,13 +3,11 @@
 每个项目 = projects/<project_id>/  目录，结构：
   manifest.json          ← 项目状态（budget / entities / 元信息）
   storyboard.json        ← 分镜：title/duration/ratio/shots[]/entities_planned[]
-  entities/              ← 角色/道具/场景的参考图（gen_image 中 name 以 ref_ 开头的落这里）
-    ref_<主体>_<view>.png  ← 扁平命名，一张图一个文件：
-                            ref_dancer_girl_front.png / ref_living_room_wide.png ...
-                          （没有 ref.json 档案库、没有 per-entity 子目录——一个 entity 就是几张 ref_ 图，
-                            agent 在上下文里自己记「主体名 → 图 url」，必要时 file_write 一个小 json 备查）
-  shots/                 ← 关键帧（gen_image 非 ref_ 前缀）+ 镜头视频（gen_video_t2v）
-  audios/                ← BGM / TTS 等音频产物（gen_audio_bgm 落盘到这里）
+  entities/              ← 角色/道具/场景等长期参考资产（gen_image category=entity）
+  shots/                 ← 故事板/分镜草图/关键帧等镜头级素材（gen_image category=shot）+ 镜头视频（gen_video_t2v）
+                          文件名由 agent 按项目语义自定，只要求稳定、可读、可回查；
+                          工具层不规定固定后缀或固定命名模板。
+  audios/                ← BGM 等音频产物（gen_audio_bgm 落盘到这里）
   composed/              ← 拼接/裁剪/字幕/audio_amix 等后期产物
   reviews/               ← vlm_understand 输出 + 抽帧
   logs/                  ← tool_calls.jsonl（每次调用都按时间戳留痕）
@@ -152,8 +150,8 @@ def log_seedance_call(project_id: Optional[str], detail: dict):
 def log_model_call(project_id: Optional[str], model_kind: str, detail: dict, raw_request: dict = None, raw_response: dict = None):
     """统一记录所有"调用云端模型"的请求详情，给用户做审计/复盘用。
 
-    model_kind ∈ {seedream, seedance, vlm_video, vlm_image, tts, gen_bgm}
-    detail 应包含：name / prompt（完整不截断）/ 关键参数（duration、ratio、ref_*、size、voice、...）
+    model_kind ∈ {seedream, seedance, vlm_video, vlm_image, gen_audio_bgm}
+    detail 应包含：name / prompt（完整不截断）/ 关键参数（duration、ratio、ref_*、size、...）
                   + result_brief（task_id 或 url 等）
     raw_request: 实际发给 API 的原始 HTTP 请求体 (body/json)
     raw_response: API 返回的原始 HTTP 响应体

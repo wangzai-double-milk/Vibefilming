@@ -26,7 +26,7 @@
 |---|---|---|
 | **DeepSeek V4 Pro** | `deepseek-v4-pro-260425` | 文本（agent 推理 / 脚本规划 / 分镜拆解） |
 | **Doubao Seed 2.0 pro** | `doubao-seed-2-0-pro-260215` | 多图理解 + 视频原生理解（不抽帧） |
-| **Doubao Seedream 4.5** | `doubao-seedream-4-5-251128` | 文生图 / 图编辑（带 ref_image_url） |
+| **Doubao Seedream 4.5** | `doubao-seedream-4-5-251128` | 文生图 / 图生图 / 多图融合（reference_images） |
 | **Doubao Seedance 2.0** | `doubao-seedance-2-0-260128` | 文生视频，**只走多模态参考模式**（reference_images / reference_video_url） |
 
 **项目目录结构**（`project_create` 产出）：
@@ -35,8 +35,8 @@
 projects/<pid>/
 ├── manifest.json        ← phase / budget（用 file_read 查状态）
 ├── storyboard.json      ← 分镜（用 file_write 写入 / file_read 读回）
-├── entities/            ← 参考图（gen_image 中 name 以 ref_ 开头的落这里，扁平命名 ref_<主体>_<view>.png）
-├── shots/               ← 关键帧（非 ref_ 前缀的图）+ 单镜头视频
+├── entities/            ← 长期参考资产（gen_image 传 category=entity）
+├── shots/               ← 分镜草图 / 关键帧 / 单镜头视频（镜头级图片传 category=shot）
 ├── composed/            ← 拼接成片
 ├── audios/              ← BGM 落盘
 ├── reviews/             ← vlm_understand 审片结果

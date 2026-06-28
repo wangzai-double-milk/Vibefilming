@@ -13,12 +13,6 @@
     "ak": "",
     "sk": ""
   },
-  "tts": {
-    "app_id": "",
-    "access_token": "",
-    "cluster": "volcano_tts",
-    "voice": "BV001_streaming"
-  },
   "feishu": {
     "app_id": "",
     "app_secret": "",

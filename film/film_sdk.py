@@ -5,7 +5,7 @@
   - 失败抛具体 RuntimeError（包含 error_code / status）
   - 长任务（Seedance）拆成 submit + query 两个函数，agent 自己轮询
   - 所有产物落到指定路径，返回 path（agent 可后续读取）
-  - VLM / TTS / GenBGM 缺凭证时返回 stub 错误，不静默失败
+  - VLM / GenBGM 缺凭证时返回 stub 错误，不静默失败
 """
 import base64
 import json
@@ -245,6 +245,18 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
     # Seed 2.1 Pro 图像理解在复杂审查题上可能超过默认 180s；
     # 对齐视频理解路径，给 VLM 审图保留更长推理时间。
     raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=600)
+    try:
+        choice0 = raw["choices"][0]
+        msg = choice0.get("message", {}) or {}
+        content = msg.get("content")
+        finish = choice0.get("finish_reason", "")
+        if content is None or not isinstance(content, str) or not content.strip():
+            raise RuntimeError(
+                f"chat/completions VLM(图片) 返回空/非文本 content，finish_reason={finish}, "
+                f"msg_keys={list(msg.keys())}, raw_keys={list(raw.keys())}"
+            )
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError(f"chat/completions VLM(图片) 返回结构异常：{json.dumps(raw, ensure_ascii=False)[:500]}")
     return {"raw": raw, "body": body}
 
 
@@ -290,7 +302,31 @@ def _responses_extract_text(raw: dict) -> str:
     """从 Responses API 返回里抽出纯文本回答。
     Responses 的输出结构：output 是 item 列表，message item 的 content 里
     type=output_text 的项带 text。做防御式解析，兼容多种字段命名。
+
+    检查 Responses API 非成功状态并抛出有意义的错误，避免静默返回空字符串。
     """
+    # 检查顶层状态：completed / failed / incomplete 等
+    status = raw.get("status")
+    if status and status not in ("completed",):
+        inc = raw.get("incomplete_details") or {}
+        err = raw.get("error") or {}
+        reason = inc.get("reason") or err.get("message") or str(inc) or str(err) or status
+        raise RuntimeError(
+            f"Responses API 返回非完成状态 status={status}, reason={reason}, "
+            f"raw_id={raw.get('id', '?')}"
+        )
+
+    # 收集 refusal 信息（内容安全/审核拦截）
+    refusals = []
+    for item in raw.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for c in item.get("content", []) or []:
+            if isinstance(c, dict) and c.get("type") in ("refusal", "content_filter"):
+                refusals.append(c.get("refusal") or c.get("text") or c.get("reason", str(c)))
+    if refusals:
+        raise RuntimeError(f"Responses API 内容被拦截/拒绝：{'; '.join(refusals[:3])}")
+
     # 优先 SDK 风格的 output_text 便捷字段
     if isinstance(raw.get("output_text"), str) and raw["output_text"].strip():
         return raw["output_text"].strip()
@@ -301,11 +337,19 @@ def _responses_extract_text(raw: dict) -> str:
         for c in item.get("content", []) or []:
             if isinstance(c, dict) and c.get("type") in ("output_text", "text") and c.get("text"):
                 texts.append(c["text"])
-    return "\n".join(texts).strip()
+    answer = "\n".join(texts).strip()
+    if not answer:
+        # 解析完毕但没有拿到任何文本，说明返回结构有意外，抛出原始信息供排查
+        raise RuntimeError(
+            "Responses API 返回中未提取到任何文本回答，可能是响应格式变更或模型未输出。"
+            f" top_keys={list(raw.keys())}, output_sample={json.dumps(raw.get('output', [])[:2], ensure_ascii=False)[:500]}"
+        )
+    return answer
 
 
 def _video_understand_via_files(video: str, text: str, fps: float,
-                                system: Optional[str], max_tokens: int) -> dict:
+                                system: Optional[str], max_tokens: int,
+                                temperature: float = 0.1) -> dict:
     """大文件路径：Files API 上传 → 等 active → Responses API 引用 file_id。
     返回归一成 chat/completions 形状的 {raw, body}，让上层调用方无需区分大小路径。
     用完删除上传文件。
@@ -330,6 +374,7 @@ def _video_understand_via_files(video: str, text: str, fps: float,
             "model": MODEL_VLM,
             "input": input_msgs,
             "max_output_tokens": max_tokens,
+            "temperature": temperature,
         }
         raw = _http_post(f"{get_ark_base()}/responses", body, timeout=600)
         answer = _responses_extract_text(raw)
@@ -366,7 +411,7 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
     if not video.startswith(("http://", "https://")):
         p = Path(video)
         if p.exists() and p.stat().st_size > _VIDEO_INLINE_MAX_BYTES:
-            return _video_understand_via_files(video, text, fps, system, max_tokens)
+            return _video_understand_via_files(video, text, fps, system, max_tokens, temperature)
 
     if video.startswith(("http://", "https://")):
         video_url = video
@@ -394,19 +439,32 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
     
     # 视频原生理解（推理模型）单次推理常 >180s，对齐大文件路径用 600s 超时。
     raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=600)
+    # chat/completions 路径同样做防御：检查 finish_reason 与 content
+    try:
+        choice0 = raw["choices"][0]
+        msg = choice0.get("message", {}) or {}
+        content = msg.get("content")
+        finish = choice0.get("finish_reason", "")
+        if content is None or not isinstance(content, str) or not content.strip():
+            raise RuntimeError(
+                f"chat/completions VLM 返回空/非文本 content，finish_reason={finish}, "
+                f"msg_keys={list(msg.keys())}, raw_keys={list(raw.keys())}"
+            )
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError(f"chat/completions VLM 返回结构异常：{json.dumps(raw, ensure_ascii=False)[:500]}")
     return {"raw": raw, "body": body}
 
 
 # ============== Seedream（文生图 / 图编辑统一接口）==============
 def gen_image(prompt: str, save_path: Path,
-              ref_image_url=None,
+              reference_images=None,
               size: str = "2048x2048",
-              watermark: bool = False) -> dict:
+              watermark: bool = True) -> dict:
     """Seedream 4.0 — 文生图 / 图编辑 / 多图融合。返回 {url, path, raw}。
 
-    ref_image_url: None=文生图；str=单图编辑；list[str]=多图融合（最多 14 张）。
+    reference_images: None=文生图；str=单图编辑；list[str]=多图融合（最多 14 张）。
         可传本地 path（自动 base64 内嵌）或 http(s) url；优先传本地 path，省去转抄长签名 url。
-    watermark: 是否加「AI 生成」水印（官方默认 true，本 SDK 默认 false）。
+    watermark: 是否加「AI 生成」水印/标识（官方默认 true，本 SDK 默认 true）。
     """
     body = {
         "model": MODEL_IMG,
@@ -416,11 +474,11 @@ def gen_image(prompt: str, save_path: Path,
         "watermark": watermark,
         "n": 1,
     }
-    if ref_image_url:
-        if isinstance(ref_image_url, (list, tuple)):
-            body["image"] = [_img_to_url(x) for x in ref_image_url]
+    if reference_images:
+        if isinstance(reference_images, (list, tuple)):
+            body["image"] = [_img_to_url(x) for x in reference_images]
         else:
-            body["image"] = _img_to_url(ref_image_url)
+            body["image"] = _img_to_url(reference_images)
     raw = _http_post(f"{get_ark_base()}/images/generations", body)
     url = raw["data"][0]["url"]
     p = _download(url, Path(save_path))
@@ -432,20 +490,19 @@ def submit_video_task(prompt: str,
                       reference_images: Optional[list] = None,
                       reference_video_url: Optional[str] = None,
                       duration: Optional[int] = None,
-                      generate_audio: bool = False,
+                      generate_audio: bool = True,
                       resolution: str = "720p",
                       ratio: str = "16:9",
                       seed: Optional[int] = None,
                       camera_fixed: Optional[bool] = None) -> dict:
     """提交 Seedance 任务（**仅多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
 
-    本 SDK 已经统一只走「t2v + 多模态参考」一条路径——这是官方做精良
-    商业短剧（如水果茶广告 demo）的标准姿势：
+    本 SDK 已经统一只走「t2v + 多模态参考」一条路径——这是商业短剧/广告类项目的标准姿势：
       - prompt 里详细描述本镜场景/动作/构图，并用文字暗示首尾帧
       - reference_images：最多 9 张图（角色三视图 + 关键道具 + 概念图等）
       - reference_video_url：链式生成第 N 段（N≥2）时把上一段视频塞进来，
         让模型看到完整动作连续性，比仅"末帧静止参考"稳得多
-      - generate_audio=True → Seedance 2.0 原生生成同步音频
+      - generate_audio=True → Seedance 2.0 原生生成同步音频（本 SDK 默认开启）
       - duration 4-15 秒；不传由模型自定（一般 5s）
 
     注意：**已不再支持首尾帧（i2v）模式**，原因：
@@ -984,18 +1041,6 @@ def probe_duration(clip: str) -> float:
     raise RuntimeError(f"probe_duration 失败，无法探测视频时长：{clip}")
 
 
-# ============== TTS / GenBGM stub（待 key） ==============
-def tts(text: str, save_path: Path, voice: str = "default") -> dict:
-    """豆包大模型语音合成。需 TTS_APP_ID + TTS_TOKEN。当前返回 stub。"""
-    if not (get_extra("TTS_APP_ID") and get_extra("TTS_TOKEN")):
-        raise RuntimeError(
-            "TTS 凭证缺失：请到 https://console.volcengine.com/speech 开通"
-            "「大模型语音合成」，把 TTS_APP_ID / TTS_TOKEN 填到 "
-            "vibefilming.config.json"
-        )
-    raise NotImplementedError("TTS 实现待补：参考 smoke_tests/test_06_tts.py")
-
-
 # ---- 火山引擎 SigV4 签名（纯标准库实现，避免引入 volcengine SDK） ----
 def _volc_sign_v4(method: str, query: dict, body_bytes: bytes,
                   ak: str, sk: str,
@@ -1085,56 +1130,6 @@ def _volc_call(action: str, body: Optional[dict],
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", "ignore")
         raise RuntimeError(f"VOLC HTTP {e.code} on Action={action}: {body_text[:500]}")
-
-
-def gen_bgm(prompt: str, save_path: Path,
-            duration: int = 60,
-            segments: Optional[list] = None,
-            *,
-            poll: bool = True,
-            poll_interval: float = 5.0,
-            poll_timeout: float = 300.0,
-            enable_input_rewrite: bool = False) -> dict:
-    """火山引擎 GenBGM（Action=GenBGM, Version=2024-08-12, v5.0）。
-
-    Args:
-        prompt: Text 字段，自然语言描述风格/情绪/乐器/场景
-        save_path: 落盘路径（默认 wav，但火山可能返回 mp4 容器，按内容决定）
-        duration: 30-120 秒
-        segments: 可选，[{"Name":"intro","Duration":10}, ...]，
-                  Name ∈ intro/verse/chorus/inst/bridge/outro，
-                  总和需 [30,120]，传入则覆盖 duration
-        poll: True=同步阻塞到拿到 audio_url；False=只回 task_id
-        poll_interval / poll_timeout: 轮询参数
-        enable_input_rewrite: 是否让模型自动改写 prompt
-
-    Returns:
-        poll=True: {"path": str, "audio_url": str, "task_id": str,
-                    "duration": float, "style_info": dict, "raw": dict}
-        poll=False: {"task_id": str}
-
-    Raises:
-        RuntimeError: 凭证缺失 / API 错误 / 50000001 版权校验失败 / 轮询超时
-    """
-    submitted = submit_bgm_task(
-        prompt, duration=duration, segments=segments,
-        enable_input_rewrite=enable_input_rewrite,
-    )
-    task_id = submitted["task_id"]
-    if not poll:
-        return {"task_id": task_id}
-
-    deadline = time.time() + poll_timeout
-    last = None
-    while time.time() < deadline:
-        last = query_bgm_task(task_id, save_path=save_path)
-        st = last["status"]
-        if st == "succeeded":
-            return last
-        if st == "failed":
-            raise RuntimeError(f"GenBGM 任务失败 task_id={task_id}: {last.get('error')}")
-        time.sleep(poll_interval)
-    raise TimeoutError(f"GenBGM 轮询超时 task_id={task_id}, last={last}")
 
 
 def submit_bgm_task(prompt: str,

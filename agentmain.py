@@ -110,9 +110,9 @@ def build_skills_index():
 
 def build_tools_index():
     """从已加载的 TOOLS_SCHEMA 自动生成 film 工具速查表。
-    工具的真相源是 tools.py 的 TOOL_REGISTRY + tools_schema_film.json，
+    工具的真相源是 tools.py 的 @film_tool 装饰器 + tools_schema_film.json，
     这里只抽 [Film] 开头的工具名 + description 第一句，sys_prompt 不再手抄。
-    加新工具只要在 tools.py 注册 + schema 写条目，速查表启动自动更新。"""
+    加新 film 工具只要在 tools.py 挂 @film_tool，速查表启动自动更新。"""
     film_tools, ga_tools = [], []
     for t in TOOLS_SCHEMA:
         fn = t.get('function', {})
@@ -255,7 +255,7 @@ class GenericAgent:
             self.handler = handler  # although new handler, the **full** history is in llmclient, so it is full history!
             self.llmclient.log_path = self.log_path
             gen = agent_runner_loop(self.llmclient, sys_prompt, raw_query, handler, TOOLS_SCHEMA, 
-                                    max_turns=80, verbose=self.verbose, yield_info=True)
+                                    max_turns=1000, verbose=self.verbose, yield_info=True)
             try:
                 full_resp = ""; last_pos = 0; curr_turn = 0; turn_resps = []
                 for chunk in gen:
@@ -311,7 +311,7 @@ if __name__ == '__main__':
     agent = GeneraticAgent()
     agent.next_llm(args.llm_no)
     agent.verbose = args.verbose
-    threading.Thread(target=agent.run, daemon=True).start()
+    worker = threading.Thread(target=agent.run, daemon=True); worker.start()
 
     if args.task:
         agent.peer_hint = False
@@ -325,9 +325,20 @@ if __name__ == '__main__':
         with open(infile, encoding='utf-8') as f: raw = f.read()
         while True:
             dq = agent.put_task(raw, source='task')
-            while 'done' not in (item := dq.get(timeout=300)): 
+            item = None
+            while True:  # 阻塞型工具调用(query_video_task/vlm_understand)期间队列长时间为空属正常，只要worker还活着就继续等
+                try:
+                    item = dq.get(timeout=300)
+                except queue.Empty:
+                    if worker.is_alive() and agent.is_running:
+                        continue
+                    break
+                if 'done' in item:
+                    break
                 if 'next' in item and random.random() < 0.95:  # 概率写一次中间结果
                     with open(f'{d}/output{nround}.txt', 'w', encoding='utf-8') as f: f.write(item.get('next', ''))
+            if item is None or 'done' not in item:
+                break  # worker已退出且没产出最终结果，结束本任务
             with open(f'{d}/output{nround}.txt', 'w', encoding='utf-8') as f: f.write(item['done'] + '\n\n[ROUND END]\n')
             consume_file(d, '_stop')  # 已经成功停下来了，避免打断下次reply
             for _ in range(300):  # 等reply.txt，10分钟超时
