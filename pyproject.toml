@@ -14,7 +14,9 @@ dependencies = [
     "bottle>=0.12",
     "simple-websocket-server>=0.4",
     "aiohttp>=3.9",
+    "imageio-ffmpeg>=0.4",
     "prompt_toolkit>=3.0",
+    "cozeloop>=0.1.28,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -25,9 +27,6 @@ ui = [
 ]
 feishu = [
     "lark-oapi>=1.0",
-]
-cozeloop = [
-    "cozeloop>=0.1.28,<0.2",
 ]
 
 [build-system]

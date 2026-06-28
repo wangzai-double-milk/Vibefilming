@@ -37,7 +37,8 @@ echo "==> 3/4 安装依赖"
     "simple-websocket-server>=0.4" \
     "aiohttp>=3.9" \
     "imageio-ffmpeg>=0.4" \
-    "prompt_toolkit>=3.0"
+    "prompt_toolkit>=3.0" \
+    "cozeloop>=0.1.28,<0.2"
 echo "    依赖装好"
 
 echo "==> 4/4 检查 vibefilming.config.json"

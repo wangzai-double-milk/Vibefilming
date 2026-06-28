@@ -1,3 +1,14 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
-exec python -m ga_cli "$@"
+if [ -n "${PYTHON:-}" ]; then
+    exec "$PYTHON" -m ga_cli "$@"
+elif [ -x ".venv/bin/python" ]; then
+    exec ".venv/bin/python" -m ga_cli "$@"
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 -m ga_cli "$@"
+elif command -v python >/dev/null 2>&1; then
+    exec python -m ga_cli "$@"
+else
+    echo "[X] No Python interpreter found. Run bash setup.sh first." >&2
+    exit 1
+fi
