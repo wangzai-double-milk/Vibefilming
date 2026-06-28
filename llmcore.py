@@ -44,6 +44,13 @@ def _runtime_config_from_json(cfg):
         out['fs_app_secret'] = feishu.get('app_secret')
     if 'allowed_users' in feishu:
         out['fs_allowed_users'] = feishu.get('allowed_users') or []
+    cozeloop = cfg.get('cozeloop') if isinstance(cfg.get('cozeloop'), dict) else {}
+    if cozeloop:
+        out['cozeloop_config'] = dict(cozeloop)
+    if isinstance(cfg.get('cozeloop_config'), dict):
+        out['cozeloop_config'] = dict(cfg['cozeloop_config'])
+    if isinstance(cfg.get('langfuse_config'), dict):
+        out['langfuse_config'] = dict(cfg['langfuse_config'])
     return out
 
 def _load_runtime_config():

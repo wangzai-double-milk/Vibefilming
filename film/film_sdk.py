@@ -260,7 +260,7 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
     return {"raw": raw, "body": body}
 
 
-def upload_file_ark(file_path: Path, fps: float = 1.0, timeout: int = 600) -> dict:
+def upload_file_ark(file_path: Path, fps: float = 1.0, timeout: int = 1800) -> dict:
     """上传本地文件到 ark Files API，返回文件元信息（含 id）。
     用于 >50MB 大文件：base64 内嵌进 chat/completions 会被网关拒收（Broken pipe / 413），
     官方要求改走 Files API + Responses API。
@@ -276,7 +276,7 @@ def upload_file_ark(file_path: Path, fps: float = 1.0, timeout: int = 600) -> di
     return r
 
 
-def wait_file_active(file_id: str, timeout: int = 300, interval: int = 3) -> dict:
+def wait_file_active(file_id: str, timeout: int = 1200, interval: int = 3) -> dict:
     """轮询文件预处理状态，直到 active 才能在 Responses API 中使用。
     抛 TimeoutError / RuntimeError（失败状态）。
     """
@@ -376,7 +376,7 @@ def _video_understand_via_files(video: str, text: str, fps: float,
             "max_output_tokens": max_tokens,
             "temperature": temperature,
         }
-        raw = _http_post(f"{get_ark_base()}/responses", body, timeout=600)
+        raw = _http_post(f"{get_ark_base()}/responses", body, timeout=1800)
         answer = _responses_extract_text(raw)
         # 归一成 chat/completions 形状，保持调用方 raw["choices"][0]["message"]["content"] 不变
         normalized = {
@@ -437,8 +437,8 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
         "temperature": temperature,
     }
     
-    # 视频原生理解（推理模型）单次推理常 >180s，对齐大文件路径用 600s 超时。
-    raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=600)
+    # 视频原生理解（推理模型）单次推理常 >180s，长片/4K 整片更久，给足 1800s 超时。
+    raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=1800)
     # chat/completions 路径同样做防御：检查 finish_reason 与 content
     try:
         choice0 = raw["choices"][0]
@@ -493,8 +493,7 @@ def submit_video_task(prompt: str,
                       generate_audio: bool = True,
                       resolution: str = "720p",
                       ratio: str = "16:9",
-                      seed: Optional[int] = None,
-                      camera_fixed: Optional[bool] = None) -> dict:
+                      seed: Optional[int] = None) -> dict:
     """提交 Seedance 任务（**仅多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
 
     本 SDK 已经统一只走「t2v + 多模态参考」一条路径——这是商业短剧/广告类项目的标准姿势：
@@ -504,6 +503,7 @@ def submit_video_task(prompt: str,
         让模型看到完整动作连续性，比仅"末帧静止参考"稳得多
       - generate_audio=True → Seedance 2.0 原生生成同步音频（本 SDK 默认开启）
       - duration 4-15 秒；不传由模型自定（一般 5s）
+      - resolution 支持 480p / 720p / 1080p / 4k；默认 720p，调用方按交付规格选择
 
     注意：**已不再支持首尾帧（i2v）模式**，原因：
       - first_frame/last_frame 与 reference_image/video 互斥，鱼与熊掌不可兼得
@@ -529,6 +529,9 @@ def submit_video_task(prompt: str,
             "video_url": {"url": reference_video_url},
             "role": "reference_video",
         })
+    valid_resolutions = {"480p", "720p", "1080p", "4k"}
+    if resolution not in valid_resolutions:
+        raise ValueError(f"Seedance resolution 只支持 480p/720p/1080p/4k，当前为 {resolution!r}")
     body = {"model": MODEL_VIDEO, "content": content,
             "resolution": resolution, "ratio": ratio}
     if duration:
@@ -537,8 +540,6 @@ def submit_video_task(prompt: str,
         body["generate_audio"] = True
     if seed is not None:
         body["seed"] = int(seed)
-    if camera_fixed is not None:
-        body["camera_fixed"] = bool(camera_fixed)
     raw = _http_post(f"{get_ark_base()}/contents/generations/tasks", body)
     return {"task_id": raw.get("id"), "model": MODEL_VIDEO, "raw": raw, "body": body}
 
@@ -643,20 +644,121 @@ def _audio_fade_filter(fade_in: float = 0.0, fade_out: float = 0.0,
     return ",".join(filters) if filters else "anull"
 
 
-def video_concat(clips: list, save_path: Path) -> dict:
-    """硬拼接（无重编码）。要求所有 clip 编码参数一致。"""
+def probe_video_size(clip: str) -> tuple[int, int]:
+    """探测视频宽高。失败时抛错，避免 concat filter 靠猜导致隐性失败。"""
+    ffprobe = _find_ffprobe()
+    if ffprobe:
+        try:
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(clip)],
+                capture_output=True, text=True, timeout=15,
+            )
+            s = r.stdout.strip()
+            if "x" in s:
+                w, h = s.split("x", 1)
+                return int(w), int(h)
+        except Exception:
+            pass
+    try:
+        r = subprocess.run(
+            [FFMPEG, "-hide_banner", "-i", str(clip)],
+            capture_output=True, text=True, timeout=30,
+        )
+        import re
+        m = re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", r.stderr)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    raise RuntimeError(f"probe_video_size 失败，无法探测视频宽高：{clip}")
+
+
+def video_concat(clips: list, save_path: Path, crossfade: float = 0.3,
+                 fade_in: float = 0.0, fade_out: float = 0.0,
+                 preset: str = "ultrafast") -> dict:
+    """一段/多段拼接。视频硬切，音频在切点做短淡化，统一重编码。
+
+    这里的 crossfade 是切点音频平滑时长：上一段尾部淡出、下一段头部淡入。
+    不做画面重叠，也不改变段落总时长，避免对白/口型相对画面漂移。
+    """
+    if not clips:
+        raise ValueError("video_concat 至少需要 1 个 clip")
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    list_file = save_path.parent / f".concat_{int(time.time()*1000)}.txt"
-    list_file.write_text(
-        "\n".join(f"file '{Path(c).resolve()}'" for c in clips), encoding="utf-8"
-    )
-    try:
-        _run_ffmpeg(["-f", "concat", "-safe", "0",
-                     "-i", str(list_file), "-c", "copy", str(save_path)])
-    finally:
-        list_file.unlink(missing_ok=True)
-    return {"path": str(save_path)}
+
+    durations = [probe_duration(c) for c in clips]
+    target_w, target_h = probe_video_size(clips[0])
+    args = []
+    filters = []
+    concat_inputs = []
+    next_input = 0
+    smooth = max(0.0, float(crossfade or 0.0))
+
+    for i, (clip, duration) in enumerate(zip(clips, durations)):
+        clip_input = next_input
+        args.extend(["-i", str(clip)])
+        next_input += 1
+
+        audio_src = f"[{clip_input}:a]"
+        if not has_audio_stream(clip):
+            args.extend([
+                "-f", "lavfi", "-t", f"{duration:.3f}",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ])
+            audio_src = f"[{next_input}:a]"
+            next_input += 1
+
+        v_label = f"v{i}"
+        a_label = f"a{i}"
+        filters.append(
+            f"[{clip_input}:v]"
+            f"setpts=PTS-STARTPTS,"
+            f"fps=30,"
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
+            f"setsar=1,format=yuv420p"
+            f"[{v_label}]"
+        )
+
+        fades = []
+        start_fade = float(fade_in or 0.0) if i == 0 else smooth
+        end_fade = float(fade_out or 0.0) if i == len(clips) - 1 else smooth
+        start_fade = min(max(0.0, start_fade), max(0.0, duration / 3.0))
+        end_fade = min(max(0.0, end_fade), max(0.0, duration / 3.0))
+        if start_fade > 0:
+            fades.append(f"afade=t=in:st=0:d={start_fade:.3f}")
+        if end_fade > 0:
+            fades.append(f"afade=t=out:st={max(0.0, duration - end_fade):.3f}:d={end_fade:.3f}")
+        fade_chain = "," + ",".join(fades) if fades else ""
+        filters.append(
+            f"{audio_src}"
+            f"aresample=44100,"
+            f"aformat=sample_rates=44100:channel_layouts=stereo,"
+            f"apad=whole_dur={duration:.3f},"
+            f"atrim=0:{duration:.3f},"
+            f"asetpts=PTS-STARTPTS"
+            f"{fade_chain}"
+            f"[{a_label}]"
+        )
+        concat_inputs.append(f"[{v_label}][{a_label}]")
+
+    filters.append("".join(concat_inputs) + f"concat=n={len(clips)}:v=1:a=1[v][a]")
+    timeout = max(300, int(sum(durations) * 20))
+    _run_ffmpeg([
+        *args,
+        "-filter_complex", ";".join(filters),
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", preset,
+        "-c:a", "aac", "-movflags", "+faststart",
+        str(save_path),
+    ], timeout=timeout)
+    return {
+        "path": str(save_path),
+        "clips": len(clips),
+        "duration": sum(durations),
+        "audio_smoothing": smooth,
+    }
 
 
 def video_crossfade(clip_a: str, clip_b: str, save_path: Path,

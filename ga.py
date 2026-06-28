@@ -259,6 +259,26 @@ def consume_file(dr, file):
         os.remove(os.path.join(dr, file))
         return content
 
+def _summary_only_pending_action(content):
+    """Detect progress-only replies that promise more work but forgot tool calls."""
+    if not content:
+        return ""
+    m = re.search(r"<summary>(.*?)</summary>", content, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return ""
+    residual = re.sub(r"<thinking>[\s\S]*?</thinking>", "", content, flags=re.IGNORECASE)
+    residual = re.sub(r"<summary>[\s\S]*?</summary>", "", residual, flags=re.IGNORECASE)
+    if len(re.sub(r"\s+", "", residual)) > 20:
+        return ""
+    summary = m.group(1).strip()
+    if not summary:
+        return ""
+    pending_re = r"(继续|接着|随后|下一步|将|准备|开始|轮询|查询|提交|生成|审查|复审|下载|合成|拼接|开拍|执行)"
+    done_re = r"(已完成全部|任务完成|全部完成|最终交付|无需继续|等待用户|需要用户|请用户|已交付)"
+    if re.search(pending_re, summary) and not re.search(done_re, summary):
+        return summary
+    return ""
+
 class GenericAgentHandler(BaseHandler):
     '''Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
     def __init__(self, parent, last_history=None, cwd='./temp'):
@@ -471,6 +491,20 @@ class GenericAgentHandler(BaseHandler):
         if 'max_tokens !!!]' in content[-100:]:
             return self._retry_or_exit("[System] max_tokens limit reached. Use multi small steps to do it.")
         
+        pending_summary = _summary_only_pending_action(content)
+        if pending_summary:
+            ct = getattr(self, '_summary_only_pending_ct', 0) + 1
+            self._summary_only_pending_ct = ct
+            if ct <= 3:
+                yield "[Warn] Summary-only pending action without tool call. Continuing autonomously.\n"
+                return StepOutcome({}, next_prompt=(
+                    "[System] 上一轮你只输出了进度 summary，但没有调用任何工具。"
+                    f"summary={pending_summary!r}。\n"
+                    "如果任务尚未完成，必须在本轮直接调用下一步所需工具；"
+                    "不要只写计划或进度描述。只有确实完成、失败阻塞或需要用户决策时，才可以不调用工具并明确说明原因。"
+                ))
+            yield "[Warn] Repeated summary-only pending actions. Stopping to avoid an infinite loop.\n"
+
         if self._in_plan_mode() and any(kw in content for kw in ['任务完成', '全部完成', '已完成所有', '🏁']):
             if 'VERDICT' not in content and '[VERIFY]' not in content and '验证subagent' not in content:
                 yield "[Warn] Plan模式完成声明拦截。\n"

@@ -26,6 +26,9 @@ ui = [
 feishu = [
     "lark-oapi>=1.0",
 ]
+cozeloop = [
+    "cozeloop>=0.1.28,<0.2",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]

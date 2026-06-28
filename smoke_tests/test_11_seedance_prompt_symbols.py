@@ -77,7 +77,6 @@ def main():
         resolution="720p",
         ratio="16:9",
         seed=None,
-        camera_fixed=None,
     ):
         captured.update(
             {
@@ -89,7 +88,6 @@ def main():
                 "resolution": resolution,
                 "ratio": ratio,
                 "seed": seed,
-                "camera_fixed": camera_fixed,
             }
         )
         return {

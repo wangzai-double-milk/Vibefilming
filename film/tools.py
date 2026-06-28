@@ -315,10 +315,9 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
         "generate_audio": {"type": bool, "description": "Seedance 2.0 原生同步音频，默认 true。用于原生对白/环境声/必要音效；是否加背景音乐由 prompt/audio_plan 决定。只有明确要全静音时才传 false", "default": True},
         "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图列表（最多 9 张）。把本 shot 的故事板/分镜草图（构图蓝图）以及角色/道具/场景参考图都放进来锁构图和一致性。**强烈建议直接传 gen_image 返回的本地 path**（短、好转抄，工具会自动 base64 内嵌）；不要转抄那条很长的带签名 url——签名 query 一旦被你截断，Seedance 服务端就会报 resource download failed"},
         "reference_video_url": {"type": str, "description": "[链式段（≥2 段视频中第 N≥2 段）必传] 上一段视频。可传 query_video_task 返回的 video_url（云端 url），也可传 path（本地 mp4 路径，工具会自动反查同名 .url.txt sidecar 取云端 url）。最多 1 段"},
-        "resolution": {"type": str, "enum": ["480p", "720p", "1080p"], "default": "720p"},
+        "resolution": {"type": str, "enum": ["480p", "720p", "1080p", "4k"], "description": "视频清晰度。Seedance 2.0 支持 4k；默认 720p，只有交付场景需要高规格画质时才主动选择 4k", "default": "720p"},
         "ratio": {"type": str, "enum": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], "description": "视频画幅比例，必须显式传入"},
         "seed": {"type": int, "description": "[可选] 随机种子（-1 随机）。传同一 seed + 同 prompt 可复现近似画面，用于锁定/微调"},
-        "camera_fixed": {"type": bool, "description": "[可选] 是否固定机位（不运镜）。固定机位镜头建议传 true，比只在 prompt 里写更稳"},
     },
     required=["prompt", "name", "duration", "ratio"],
 )
@@ -337,6 +336,12 @@ def _gen_video_t2v(handler, args):
     valid_ratios = {"16:9", "9:16", "1:1", "4:3", "3:4", "21:9"}
     if ratio not in valid_ratios:
         raise ValueError(f"gen_video_t2v 必须显式传合法 ratio，当前为 {ratio!r}，可选：{sorted(valid_ratios)}")
+    resolution = args.get("resolution", "720p")
+    valid_resolutions = {"480p", "720p", "1080p", "4k"}
+    if resolution not in valid_resolutions:
+        raise ValueError(
+            f"gen_video_t2v resolution 只支持 480p/720p/1080p/4k，当前为 {resolution!r}"
+        )
     generate_audio = bool(args.get("generate_audio", True))
     has_speech_intent = bool(re.search(r"[{}]|说话|说道|说|喊|大喊|开口|嘴唇|口型|对白|台词|低语|朗读|念出|回答|询问|讨论", prompt))
     if not generate_audio and has_speech_intent:
@@ -359,17 +364,15 @@ def _gen_video_t2v(handler, args):
     ref_video_in = args.get("reference_video_url")
     ref_video = _resolve_reference_video(ref_video_in)
     seed = args.get("seed")
-    camera_fixed = args.get("camera_fixed")
     r = sdk.submit_video_task(
         prompt,
         reference_images=ref_urls or None,
         reference_video_url=ref_video,
         duration=duration,
         generate_audio=generate_audio,
-        resolution=args.get("resolution", "720p"),
+        resolution=resolution,
         ratio=ratio,
         seed=seed,
-        camera_fixed=camera_fixed,
     )
     ws.log_seedance_call(pid, {
         "tool": "gen_video_t2v", "name": name, "task_id": r["task_id"],
@@ -387,10 +390,9 @@ def _gen_video_t2v(handler, args):
         "prompt": prompt,                            # 完整 prompt 不截断（已含 lint 后版本）
         "duration": duration,
         "ratio": ratio,
-        "resolution": args.get("resolution", "720p"),
+        "resolution": resolution,
         "generate_audio": generate_audio,
         "seed": seed,
-        "camera_fixed": camera_fixed,
         "reference_video_url": ref_video,
         "reference_video_url_input": ref_video_in,
         "reference_images_count": len(ref_urls),
@@ -549,11 +551,11 @@ def _cancel_video_task(handler, args):
 # ============== 视频处理 ==============
 @film_tool(
     name="video_concat",
-    desc="默认高标准一段/多段拼接：视频按段硬切，音频在相邻段之间自动做短 crossfade，避免对白尾音被切断和切点爆音；可选整片头尾淡入淡出。会重编码。",
+    desc="默认高标准一段/多段拼接：视频按段硬切，切点音频自动做短淡化平滑，避免对白尾音被切断和切点爆音；可选整片头尾淡入淡出。会重编码。",
     params={
         "clips": {"type": "array", "items": {"type": "string"}, "description": "按顺序的视频文件路径列表"},
         "name": {"type": str, "description": "输出文件名"},
-        "crossfade": {"type": float, "description": "相邻段音频交叉淡化时长(秒)，默认 0.3s。对白密/情绪紧可 0.2s，段落感强可 0.5s", "default": 0.3},
+        "crossfade": {"type": float, "description": "相邻段切点音频平滑时长(秒)，默认 0.3s。对白密/情绪紧可 0.2s，段落感强可 0.5s", "default": 0.3},
         "fade_in": {"type": float, "description": "[可选] 整片开头画面和音频淡入时长(秒)", "default": 0.0},
         "fade_out": {"type": float, "description": "[可选] 整片结尾画面和音频淡出时长(秒)", "default": 0.0},
         "preset": {"type": str, "description": "[可选] x264 编码档位（ultrafast..veryslow）", "default": "ultrafast"},
