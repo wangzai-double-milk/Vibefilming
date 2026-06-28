@@ -8,6 +8,8 @@ CONFIG_JSON = os.path.join(_ROOT, 'vibefilming.config.json')
 TRUNCATION_MARKER = "[!!! Response truncated: max_tokens !!!]"
 DEFAULT_MAX_TOKENS = 16000
 DEFAULT_CONTEXT_WIN = 125000
+ANCHOR_CONTEXT_MAX_LEN = 12000
+KEY_INFO_CONTEXT_MAX_LEN = 3000
 _USAGE_TLS = threading.local()
 
 def _as_int(value):
@@ -130,10 +132,18 @@ def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, in
     if compress_history_tags._cd % interval != 0: return messages
     _before = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
     _pats = {tag: re.compile(rf'(<{tag}>)([\s\S]*?)(</{tag}>)') for tag in ('thinking', 'think', 'tool_use', 'tool_result')}
-    _hist_pat = re.compile(r'<(history|key_info|earlier_context)>[\s\S]*?</\1>')
-    def _trunc_str(s): return s[:max_len//2] + '\n...[Truncated]...\n' + s[-max_len//2:] if isinstance(s, str) and len(s) > max_len else s
+    _hist_pat = re.compile(r'<(history|earlier_context)>[\s\S]*?</\1>')
+    _key_info_pat = re.compile(r'(<key_info>)([\s\S]*?)(</key_info>)')
+    _anchor_pat = re.compile(
+        r'(?:skills/[^"\']+/SKILL\.md|director_plan\.json|script\.json|manifest\.json|reviews/[^"\']+\.json)'
+    )
+    def _trunc_str(s, limit=None):
+        if not isinstance(s, str): return s
+        limit = limit or (ANCHOR_CONTEXT_MAX_LEN if _anchor_pat.search(s) else max_len)
+        return s[:limit//2] + '\n...[Truncated]...\n' + s[-limit//2:] if len(s) > limit else s
     def _trunc(text):
         text = _hist_pat.sub(lambda m: f'<{m.group(1)}>[...]</{m.group(1)}>', text)
+        text = _key_info_pat.sub(lambda m: m.group(1) + _trunc_str(m.group(2), KEY_INFO_CONTEXT_MAX_LEN) + m.group(3), text)
         for pat in _pats.values(): text = pat.sub(lambda m: m.group(1) + _trunc_str(m.group(2)) + m.group(3), text)
         return text
     for i, msg in enumerate(messages):

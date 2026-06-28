@@ -173,6 +173,35 @@ def _project_open(handler, args):
     return {"project_id": pid, "phases": m["phases"]}
 
 
+@film_tool(
+    name="project_update_phase",
+    desc="更新当前影视项目 manifest.json 的阶段状态。长任务里用它把 story/entity/asset/animate/compose/review 的 done/in_progress/blocked 写回项目文件，避免只靠对话摘要记进度。",
+    params={
+        "phase": {"type": "string", "enum": ["story", "entity", "asset", "animate", "compose", "review"], "description": "要更新的阶段"},
+        "status": {"type": "string", "enum": ["pending", "in_progress", "done", "blocked"], "description": "阶段状态"},
+        "note": {"type": str, "description": "当前阶段的简短证据或阻塞点", "default": ""},
+        "artifact": {"type": str, "description": "本阶段关键产物路径，例如 director_plan.json、composed/final.mp4、reviews/final_review.json", "default": ""},
+        "shots_done": {"type": int, "description": "可选：已完成镜头/片段数", "default": None},
+        "shots_total": {"type": int, "description": "可选：总镜头/片段数", "default": None},
+    },
+    required=["phase", "status"],
+)
+def _project_update_phase(handler, args):
+    pid = _active_pid(handler)
+    if not pid:
+        raise RuntimeError("尚无活跃项目，请先调用 project_create / project_open")
+    payload = {"status": args["status"], "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    if args.get("note"):
+        payload["note"] = args["note"]
+    if args.get("artifact"):
+        payload["artifact"] = args["artifact"]
+    for key in ("shots_done", "shots_total"):
+        if args.get(key) is not None:
+            payload[key] = int(args[key])
+    m = ws.update_phase(pid, args["phase"], **payload)
+    return {"project_id": pid, "phase": args["phase"], "state": m["phases"][args["phase"]]}
+
+
 # ============== 视觉生成 ==============
 @film_tool(
     name="gen_image",
@@ -322,9 +351,9 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
     required=["prompt", "name", "duration", "ratio"],
 )
 def _gen_video_t2v(handler, args):
-    """Seedance 视频生成（仅多模态参考模式）。
+    """Seedance 视频生成（多模态参考模式）。
     参考媒体：reference_images（最多 9 张 url）/ reference_video_url（链式段承接上一段）。
-    本工具是**唯一**的视频生成入口——已删除 i2v / 首尾帧模式（互斥 reference 不划算）。
+    通过文字 prompt + 参考图/参考视频控制画面，链式段把上一段视频作为参考视频承接。
     """
     prompt = args["prompt"]
     if "duration" not in args:
@@ -964,7 +993,7 @@ def _burn_subtitle(handler, args):
 
 @film_tool(
     name="vlm_understand",
-    desc="开放式视觉理解：自己写 question，Doubao Seed 2.1 pro 回答。视频始终走原生视频理解（不抽帧、不降级），图片走多图理解。结果落到 reviews/<name>.json。**审 video 传 video，审图片传 images（二选一，至少传一个）**。审片时 question 越具体越好，可让 VLM 同时根据画面和音轨作答。",
+    desc="开放式视觉理解：自己写 question，Doubao Seed 2.1 pro 回答。视频走原生视频理解，图片走多图理解；本地视频超过 Ark Files API 上限时会自动生成压缩审片代理文件再上传，不需要临时写 ffmpeg。结果落到 reviews/<name>.json。**审 video 传 video，审图片传 images（二选一，至少传一个）**。审片时 question 越具体越好，可让 VLM 同时根据画面和音轨作答。",
     params={
         "video": {"type": str, "description": "[审视频时传] 单个视频路径。与 images 二选一"},
         "images": {"type": "array", "items": {"type": "string"}, "description": "[审图片时传] 一张或多张图片路径（对比/多帧审查时传多张）。与 video 二选一", "default": None},
@@ -1023,6 +1052,9 @@ def _vlm_understand(handler, args):
     raw = resp_data["raw"]
     payload = resp_data["body"]
     
+    prepared_video = resp_data.get("prepared_video")
+    video_uploaded = resp_data.get("video_uploaded") or video
+    incomplete = raw.get("_incomplete") if isinstance(raw, dict) else None
     answer = raw["choices"][0]["message"]["content"].strip()
 
     # 归档到 reviews/<name>.json
@@ -1032,6 +1064,9 @@ def _vlm_understand(handler, args):
         archive = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "video": video, "images": images,
+            "video_uploaded": video_uploaded if is_video else None,
+            "prepared_video": prepared_video,
+            "incomplete": incomplete,
             "question": question, "answer": answer,
         }
         out.write_text(json.dumps(archive, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1041,14 +1076,21 @@ def _vlm_understand(handler, args):
         "modality": "video" if is_video else "image",
         "name": name,
         "video": video,
+        "video_uploaded": video_uploaded if is_video else None,
+        "prepared_video": prepared_video,
+        "incomplete": incomplete,
         "images": images,
         "question": question,
         "answer": answer,
         "max_tokens": int(args.get("max_tokens", 4096)),
         "temperature": float(args.get("temperature", 0.1)),
-    }, raw_request=raw.get("body"), raw_response=raw.get("raw"))
+    }, raw_request=payload, raw_response=raw)
 
     result = {"question": question, "answer": answer}
+    if prepared_video:
+        result["prepared_video"] = prepared_video
+    if incomplete:
+        result["incomplete"] = incomplete
     return result
 
 

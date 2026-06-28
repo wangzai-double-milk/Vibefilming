@@ -298,6 +298,20 @@ def delete_file_ark(file_id: str) -> dict:
     return _http_delete(f"{get_ark_base()}/files/{file_id}")
 
 
+def _responses_collect_text(raw: dict) -> str:
+    # 优先 SDK 风格的 output_text 便捷字段
+    if isinstance(raw.get("output_text"), str) and raw["output_text"].strip():
+        return raw["output_text"].strip()
+    texts = []
+    for item in raw.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for c in item.get("content", []) or []:
+            if isinstance(c, dict) and c.get("type") in ("output_text", "text") and c.get("text"):
+                texts.append(c["text"])
+    return "\n".join(texts).strip()
+
+
 def _responses_extract_text(raw: dict) -> str:
     """从 Responses API 返回里抽出纯文本回答。
     Responses 的输出结构：output 是 item 列表，message item 的 content 里
@@ -327,17 +341,7 @@ def _responses_extract_text(raw: dict) -> str:
     if refusals:
         raise RuntimeError(f"Responses API 内容被拦截/拒绝：{'; '.join(refusals[:3])}")
 
-    # 优先 SDK 风格的 output_text 便捷字段
-    if isinstance(raw.get("output_text"), str) and raw["output_text"].strip():
-        return raw["output_text"].strip()
-    texts = []
-    for item in raw.get("output", []) or []:
-        if not isinstance(item, dict):
-            continue
-        for c in item.get("content", []) or []:
-            if isinstance(c, dict) and c.get("type") in ("output_text", "text") and c.get("text"):
-                texts.append(c["text"])
-    answer = "\n".join(texts).strip()
+    answer = _responses_collect_text(raw)
     if not answer:
         # 解析完毕但没有拿到任何文本，说明返回结构有意外，抛出原始信息供排查
         raise RuntimeError(
@@ -377,13 +381,31 @@ def _video_understand_via_files(video: str, text: str, fps: float,
             "temperature": temperature,
         }
         raw = _http_post(f"{get_ark_base()}/responses", body, timeout=1800)
-        answer = _responses_extract_text(raw)
+        incomplete = None
+        try:
+            answer = _responses_extract_text(raw)
+        except RuntimeError as e:
+            inc = raw.get("incomplete_details") or {}
+            reason = inc.get("reason", "")
+            partial = _responses_collect_text(raw)
+            if raw.get("status") == "incomplete" and reason == "length" and partial:
+                incomplete = {
+                    "status": raw.get("status"),
+                    "reason": reason,
+                    "raw_id": raw.get("id"),
+                    "message": str(e),
+                }
+                answer = "【未完成，不可作为通过结论：VLM 输出达到长度上限，请拆分审查问题后继续。】\n" + partial
+            else:
+                raise
         # 归一成 chat/completions 形状，保持调用方 raw["choices"][0]["message"]["content"] 不变
         normalized = {
             "choices": [{"message": {"content": answer}}],
             "_responses_raw": raw,
             "_via": "files_api",
         }
+        if incomplete:
+            normalized["_incomplete"] = incomplete
         return {"raw": normalized, "body": body}
     finally:
         if file_id:
@@ -396,6 +418,107 @@ def _video_understand_via_files(video: str, text: str, fps: float,
 # base64 后会膨胀 4/3，chat/completions 网关上限约 50MB，
 # 原文件 > 35MB 时 base64 后逼近上限，直接走 Files API 更稳。
 _VIDEO_INLINE_MAX_BYTES = 35 * 1024 * 1024
+_ARK_FILES_MAX_BYTES = 512 * 1024 * 1024
+_VLM_PROXY_TARGET_BYTES = 500 * 1024 * 1024
+
+
+def _mb(n: int) -> float:
+    return n / (1024 * 1024)
+
+
+def prepare_video_for_vlm(video: str, *, force: bool = False,
+                          files_max_bytes: int = _ARK_FILES_MAX_BYTES,
+                          target_bytes: int = _VLM_PROXY_TARGET_BYTES,
+                          preset: str = "ultrafast") -> dict:
+    """给 VLM 上传准备本地视频代理文件。
+
+    Ark Files API 对单文件有 512MB 上限。4K 成片很容易贴近或超过该上限，
+    这里做的是传输/审核代理压缩，不重新生成创作内容。音频默认 copy，避免依赖
+    shell PATH 里的 ffmpeg 音频编码器；视频用项目内 imageio-ffmpeg 统一转码。
+    """
+    if video.startswith(("http://", "https://")):
+        return {"path": video, "prepared": False, "reason": "remote_url"}
+    src = Path(video)
+    if not src.exists():
+        return {"path": video, "prepared": False, "reason": "missing_local_file"}
+
+    source_size = src.stat().st_size
+    if not force and source_size <= files_max_bytes:
+        return {
+            "path": str(src),
+            "prepared": False,
+            "reason": "within_files_api_limit",
+            "source_size_bytes": source_size,
+            "source_size_mb": round(_mb(source_size), 2),
+            "files_api_limit_mb": round(_mb(files_max_bytes), 2),
+        }
+
+    out = src.with_name(f"{src.stem}_vlm_review.mp4")
+    if out.exists() and out.stat().st_mtime >= src.stat().st_mtime and out.stat().st_size <= target_bytes:
+        proxy_size = out.stat().st_size
+        return {
+            "path": str(out),
+            "prepared": True,
+            "cached": True,
+            "source_path": str(src),
+            "source_size_bytes": source_size,
+            "source_size_mb": round(_mb(source_size), 2),
+            "proxy_size_bytes": proxy_size,
+            "proxy_size_mb": round(_mb(proxy_size), 2),
+            "files_api_limit_mb": round(_mb(files_max_bytes), 2),
+            "ffmpeg": FFMPEG,
+        }
+
+    duration = None
+    try:
+        duration = probe_duration(str(src))
+    except Exception:
+        pass
+    timeout = max(600, int((duration or 120) * 20))
+    attempts = [
+        {"height": 1080, "crf": 30},
+        {"height": 720, "crf": 28},
+        {"height": 540, "crf": 30},
+    ]
+    last_error = None
+    for attempt in attempts:
+        try:
+            _run_ffmpeg([
+                "-i", str(src),
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-vf", f"scale=-2:{attempt['height']},setsar=1",
+                "-c:v", "libx264", "-preset", preset, "-crf", str(attempt["crf"]),
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                str(out),
+            ], timeout=timeout)
+            proxy_size = out.stat().st_size
+            if proxy_size <= target_bytes:
+                return {
+                    "path": str(out),
+                    "prepared": True,
+                    "cached": False,
+                    "source_path": str(src),
+                    "source_size_bytes": source_size,
+                    "source_size_mb": round(_mb(source_size), 2),
+                    "proxy_size_bytes": proxy_size,
+                    "proxy_size_mb": round(_mb(proxy_size), 2),
+                    "files_api_limit_mb": round(_mb(files_max_bytes), 2),
+                    "target_size_mb": round(_mb(target_bytes), 2),
+                    "height": attempt["height"],
+                    "crf": attempt["crf"],
+                    "audio": "copy",
+                    "ffmpeg": FFMPEG,
+                }
+            last_error = RuntimeError(
+                f"VLM proxy 仍过大：{_mb(proxy_size):.1f}MB > {_mb(target_bytes):.1f}MB"
+            )
+        except Exception as e:
+            last_error = e
+    raise RuntimeError(
+        f"prepare_video_for_vlm 压缩失败，source={src}, size={_mb(source_size):.1f}MB, "
+        f"ffmpeg={FFMPEG}, last_error={last_error}"
+    )
 
 
 def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
@@ -408,10 +531,23 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
         否则 base64 内嵌会被网关拒收（Broken pipe / 413）。
     system: 可选系统提示（设定 VLM 的角色/输出格式）。
     """
+    prepared_video = None
     if not video.startswith(("http://", "https://")):
         p = Path(video)
+        if p.exists() and p.stat().st_size > _ARK_FILES_MAX_BYTES:
+            prepared_video = prepare_video_for_vlm(
+                video,
+                files_max_bytes=_ARK_FILES_MAX_BYTES,
+                target_bytes=_VLM_PROXY_TARGET_BYTES,
+            )
+            video = prepared_video["path"]
+            p = Path(video)
         if p.exists() and p.stat().st_size > _VIDEO_INLINE_MAX_BYTES:
-            return _video_understand_via_files(video, text, fps, system, max_tokens, temperature)
+            data = _video_understand_via_files(video, text, fps, system, max_tokens, temperature)
+            if prepared_video:
+                data["prepared_video"] = prepared_video
+                data["video_uploaded"] = video
+            return data
 
     if video.startswith(("http://", "https://")):
         video_url = video
@@ -452,7 +588,11 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
             )
     except (KeyError, IndexError, TypeError):
         raise RuntimeError(f"chat/completions VLM 返回结构异常：{json.dumps(raw, ensure_ascii=False)[:500]}")
-    return {"raw": raw, "body": body}
+    data = {"raw": raw, "body": body}
+    if prepared_video:
+        data["prepared_video"] = prepared_video
+        data["video_uploaded"] = video
+    return data
 
 
 # ============== Seedream（文生图 / 图编辑统一接口）==============
@@ -494,20 +634,16 @@ def submit_video_task(prompt: str,
                       resolution: str = "720p",
                       ratio: str = "16:9",
                       seed: Optional[int] = None) -> dict:
-    """提交 Seedance 任务（**仅多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
+    """提交 Seedance 任务（**多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
 
-    本 SDK 已经统一只走「t2v + 多模态参考」一条路径——这是商业短剧/广告类项目的标准姿势：
+    本 SDK 统一走「t2v + 多模态参考」一条路径——商业短剧/广告类项目的标准姿势：
       - prompt 里详细描述本镜场景/动作/构图，并用文字暗示首尾帧
       - reference_images：最多 9 张图（角色三视图 + 关键道具 + 概念图等）
       - reference_video_url：链式生成第 N 段（N≥2）时把上一段视频塞进来，
-        让模型看到完整动作连续性，比仅"末帧静止参考"稳得多
+        让模型看到完整动作连续性
       - generate_audio=True → Seedance 2.0 原生生成同步音频（本 SDK 默认开启）
       - duration 4-15 秒；不传由模型自定（一般 5s）
       - resolution 支持 480p / 720p / 1080p / 4k；默认 720p，调用方按交付规格选择
-
-    注意：**已不再支持首尾帧（i2v）模式**，原因：
-      - first_frame/last_frame 与 reference_image/video 互斥，鱼与熊掌不可兼得
-      - 多模态参考能塞 9 图 + 3 视频 + 3 音频，控制力远胜首尾帧
     """
     content = [{"type": "text", "text": prompt}]
     if reference_images:
