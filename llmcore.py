@@ -5,6 +5,48 @@ _RESP_CACHE_KEY = str(uuid.uuid4())
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path: sys.path.append(_ROOT)
 CONFIG_JSON = os.path.join(_ROOT, 'vibefilming.config.json')
+TRUNCATION_MARKER = "[!!! Response truncated: max_tokens !!!]"
+DEFAULT_MAX_TOKENS = 16000
+DEFAULT_CONTEXT_WIN = 125000
+_USAGE_TLS = threading.local()
+
+def _as_int(value):
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+def _reset_usage_tracking():
+    _USAGE_TLS.usage = None
+
+def _merge_usage_tracking(record):
+    if not record:
+        return
+    current = getattr(_USAGE_TLS, "usage", None) or {}
+    for key, value in record.items():
+        if isinstance(value, int):
+            current[key] = max(_as_int(current.get(key)), value)
+        else:
+            current[key] = value
+    inp = _as_int(current.get("input_tokens"))
+    out = _as_int(current.get("output_tokens"))
+    total = _as_int(current.get("total_tokens"))
+    current["total_tokens"] = max(total, inp + out)
+    _USAGE_TLS.usage = current
+
+def _get_usage_tracking():
+    usage = getattr(_USAGE_TLS, "usage", None)
+    return dict(usage) if usage else None
+
+def _is_truncated_payload(*values):
+    for value in values:
+        if isinstance(value, str) and TRUNCATION_MARKER in value:
+            return True
+        if isinstance(value, dict) and _is_truncated_payload(*value.values()):
+            return True
+        if isinstance(value, (list, tuple)) and _is_truncated_payload(*value):
+            return True
+    return False
 
 def _load_json_file(path):
     if not os.path.exists(path):
@@ -20,6 +62,8 @@ def _runtime_config_from_json(cfg):
     feishu = cfg.get('feishu') if isinstance(cfg.get('feishu'), dict) else {}
     models = ark.get('models') if isinstance(ark.get('models'), dict) else {}
     api_key = ark.get('api_key')
+    max_tokens = int(ark.get('max_tokens') or DEFAULT_MAX_TOKENS)
+    context_win = int(ark.get('context_win') or DEFAULT_CONTEXT_WIN)
     out = {}
     if api_key:
         out['native_oai_config'] = {
@@ -28,10 +72,11 @@ def _runtime_config_from_json(cfg):
             'apibase': ark.get('api_base') or 'https://ark.cn-beijing.volces.com/api/v3',
             'model': models.get('text') or 'deepseek-v4-pro-260425',
             'api_mode': 'chat_completions',
+            'max_tokens': max_tokens,
             'max_retries': 3,
             'connect_timeout': 10,
             'read_timeout': 120,
-            'context_win': 24000,
+            'context_win': context_win,
         }
         out['mixin_config'] = {
             'llm_nos': ['doubao'],
@@ -212,8 +257,7 @@ def _parse_claude_sse(resp_lines):
             delta = evt.get("delta", {})
             stop_reason = delta.get("stop_reason", stop_reason)
             out_usage = evt.get("usage", {})
-            out_tokens = out_usage.get("output_tokens", 0)
-            if out_tokens: print(f"[Output] tokens={out_tokens} stop_reason={stop_reason}")
+            if out_usage: _record_usage(out_usage, "messages")
         elif evt_type == "message_stop": got_message_stop = True
         elif evt_type == "error":
             err = evt.get("error", {})
@@ -221,7 +265,7 @@ def _parse_claude_sse(resp_lines):
             warn = f"\n\n!!!Error: SSE {emsg}"; break
     if not warn:
         if not got_message_stop and not stop_reason: warn = "\n\n[!!! 流异常中断，未收到完整响应 !!!]"
-        elif stop_reason == "max_tokens": warn = "\n\n[!!! Response truncated: max_tokens !!!]"
+        elif stop_reason == "max_tokens": warn = f"\n\n{TRUNCATION_MARKER}"
     if current_block:
         if current_block["type"] == "tool_use":
             try: current_block["input"] = json.loads(tool_json_buf) if tool_json_buf else {}
@@ -236,16 +280,29 @@ def _try_parse_tool_args(raw):
     """Parse tool args string; split concatenated JSON objects like {..}{..} if needed.
     Returns list of parsed dicts."""
     if not raw: return [{}]
-    try: return [json.loads(raw)]
+    try: return [_unwrap_raw_tool_args(json.loads(raw))]
     except: pass
     parts = re.split(r'(?<=\})(?=\{)', raw)
     if len(parts) > 1:
         parsed = []
         for p in parts:
-            try: parsed.append(json.loads(p))
+            try: parsed.append(_unwrap_raw_tool_args(json.loads(p)))
             except: return [{"_raw": raw}]
         return parsed
     return [{"_raw": raw}]
+
+def _unwrap_raw_tool_args(value):
+    for _ in range(3):
+        if not (isinstance(value, dict) and set(value.keys()) == {"_raw"} and isinstance(value.get("_raw"), str)):
+            break
+        try:
+            inner = json.loads(value["_raw"])
+        except Exception:
+            break
+        if not isinstance(inner, dict):
+            break
+        value = inner
+    return value
 
 def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
     """Parse OpenAI SSE stream (chat_completions or responses API).
@@ -303,7 +360,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
         return blocks
     else:
         tc_buf = {}  # index -> {id, name, args}
-        reasoning_text = ""
+        reasoning_text = ""; finish_reason = None
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -313,6 +370,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             try: evt = json.loads(data_str)
             except: continue
             ch = (evt.get("choices") or [{}])[0]
+            if ch.get("finish_reason"): finish_reason = ch.get("finish_reason")
             delta = ch.get("delta") or {}
             if delta.get("reasoning_content"):
                 reasoning_text += delta["reasoning_content"]
@@ -332,6 +390,11 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
         blocks = []
         if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})
+        if finish_reason == "length":
+            warn = f"\n\n{TRUNCATION_MARKER}"
+            print(f"[WARN] {warn.strip()}")
+            blocks.append({"type": "text", "text": warn})
+            return blocks
         for idx in sorted(tc_buf):
             tc = tc_buf[idx]
             inps = _try_parse_tool_args(tc["args"])
@@ -346,16 +409,39 @@ def _record_usage(usage, api_mode):
     if api_mode == 'responses':
         cached = (usage.get("input_tokens_details") or {}).get("cached_tokens", 0)
         inp = usage.get("input_tokens", 0); out = usage.get("output_tokens", 0)
+        _merge_usage_tracking({
+            "api_mode": api_mode,
+            "input_tokens": _as_int(inp),
+            "output_tokens": _as_int(out),
+            "cached_tokens": _as_int(cached),
+            "total_tokens": _as_int(usage.get("total_tokens")),
+        })
         print(f"[Cache] input={inp} cached={cached}")
         if out: print(f"[Output] tokens={out}")
     elif api_mode == 'chat_completions':
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
         inp = usage.get("prompt_tokens", 0); out = usage.get("completion_tokens", 0)
+        _merge_usage_tracking({
+            "api_mode": api_mode,
+            "input_tokens": _as_int(inp),
+            "output_tokens": _as_int(out),
+            "cached_tokens": _as_int(cached),
+            "total_tokens": _as_int(usage.get("total_tokens")),
+        })
         print(f"[Cache] input={inp} cached={cached}")
         if out: print(f"[Output] tokens={out}")
     elif api_mode == 'messages':
-        ci, cr, inp = usage.get("cache_creation_input_tokens", 0), usage.get("cache_read_input_tokens", 0), usage.get("input_tokens", 0)
-        print(f"[Cache] input={inp} creation={ci} read={cr}")
+        ci, cr = usage.get("cache_creation_input_tokens", 0), usage.get("cache_read_input_tokens", 0)
+        inp = usage.get("input_tokens", 0); out = usage.get("output_tokens", 0)
+        _merge_usage_tracking({
+            "api_mode": api_mode,
+            "input_tokens": _as_int(inp),
+            "output_tokens": _as_int(out),
+            "cache_creation_input_tokens": _as_int(ci),
+            "cache_read_input_tokens": _as_int(cr),
+        })
+        if inp or ci or cr: print(f"[Cache] input={inp} creation={ci} read={cr}")
+        if out: print(f"[Output] tokens={out}")
 
 def _log_llm_api_call(sess, url, payload, *, status_code=None, response_body=None, error=None,
                       attempt=0, started_at=None):
@@ -647,7 +733,7 @@ class BaseSession:
         self.model = cfg.get('model', '')
         default_context_win = 30000
         if 'deepseek' in self.model.lower():
-            default_context_win = 70000; self.cut_msg_interval = 25; self.trim_keep_rate = 0.3
+            default_context_win = DEFAULT_CONTEXT_WIN; self.cut_msg_interval = 25; self.trim_keep_rate = 0.3
         self.context_win = cfg.get('context_win', default_context_win)
         self.history = []; self.lock = threading.Lock(); self.system = ""
         self.name = cfg.get('name', self.model)
@@ -689,10 +775,12 @@ class BaseSession:
                 trim_messages_history(self.history, self)
                 messages = self.make_messages(self.history)
             content_blocks = None; content = ''
+            _reset_usage_tracking()
             gen = self.raw_ask(messages)
             try:
                 while True: chunk = next(gen); content += chunk; yield chunk
             except StopIteration as e: content_blocks = e.value or []
+            self.last_usage = _get_usage_tracking()
             if len(content_blocks) > 1: print(f"[DEBUG BaseSession.ask] content_blocks: {content_blocks}")
             for block in (content_blocks or []):
                 if block.get('type', '') == 'tool_use':
@@ -812,10 +900,12 @@ class NativeClaudeSession(BaseSession):
             trim_messages_history(self.history, self)
             messages = [{"role": m["role"], "content": list(m["content"])} for m in self.history]
         content_blocks = None
+        _reset_usage_tracking()
         gen = self.raw_ask(messages)
         try:
             while True: yield next(gen)
         except StopIteration as e: content_blocks = e.value or []
+        self.last_usage = _get_usage_tracking()
         if content_blocks and (_injected := _ensure_text_block(content_blocks)): yield _injected
         if content_blocks and not (len(content_blocks) == 1 and content_blocks[0].get("text", "").startswith("!!!Error:")):
             self.history.append({"role": "assistant", "content": content_blocks})
@@ -831,7 +921,7 @@ class NativeClaudeSession(BaseSession):
             if think_match:
                 thinking = think_match.group(1).strip()
                 content = re.sub(think_pattern, "", content, flags=re.DOTALL)
-        return MockResponse(thinking, content, tool_calls, str(content_blocks))
+        return MockResponse(thinking, content, tool_calls, str(content_blocks), usage=self.last_usage)
 
 class NativeOAISession(NativeClaudeSession):
     def raw_ask(self, messages):
@@ -854,14 +944,20 @@ class MockFunction:
          
 class MockToolCall:
     def __init__(self, name, args, id=''):
+        if isinstance(args, dict):
+            args = _unwrap_raw_tool_args(args)
         arg_str = json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else (args or '{}')
         self.function = MockFunction(name, arg_str); self.id = id
 
 class MockResponse:
-    def __init__(self, thinking, content, tool_calls, raw, stop_reason='end_turn'):
+    def __init__(self, thinking, content, tool_calls, raw, stop_reason='end_turn', usage=None, first_response_at_us=None):
+        if stop_reason == 'end_turn' and _is_truncated_payload(content, raw):
+            stop_reason = 'length'
         self.thinking = thinking; self.content = content          
         self.tool_calls = tool_calls; self.raw = raw
         self.stop_reason = 'tool_use' if tool_calls else stop_reason
+        self.usage = usage
+        self.first_response_at_us = first_response_at_us
     def __repr__(self):    
         return f"<MockResponse thinking={bool(self.thinking)}, content='{self.content}', tools={bool(self.tool_calls)}>"
 
@@ -889,10 +985,16 @@ class ToolClient:
         gen = self.backend.ask(full_prompt)
         _write_llm_log('Prompt', full_prompt, self.log_path)
         raw_text = ''
+        first_response_at_us = None
         for chunk in gen:
+            if chunk and first_response_at_us is None:
+                first_response_at_us = time.time_ns() // 1000
             raw_text += chunk; yield chunk
         _write_llm_log('Response', raw_text, self.log_path)
-        return self._parse_mixed_response(raw_text)
+        resp = self._parse_mixed_response(raw_text)
+        resp.usage = getattr(self.backend, "last_usage", None) or _get_usage_tracking()
+        resp.first_response_at_us = first_response_at_us
+        return resp
 
     def _prepare_tool_instruction(self, tools):
         tool_instruction = ""
@@ -1172,10 +1274,17 @@ class NativeToolClient:
             _dump_full_context(self._turn, self.backend.system, self.backend.tools,
                                self.backend.history, merged, trace_path)
         gen = self.backend.ask(merged)
+        first_response_at_us = None
         try:
             while True: 
-                chunk = next(gen); yield chunk
+                chunk = next(gen)
+                if chunk and first_response_at_us is None:
+                    first_response_at_us = time.time_ns() // 1000
+                yield chunk
         except StopIteration as e: resp = e.value
+        if resp:
+            resp.usage = getattr(resp, "usage", None) or getattr(self.backend, "last_usage", None) or _get_usage_tracking()
+            resp.first_response_at_us = first_response_at_us
         if resp:
             _write_llm_log('Response', resp.raw, self.log_path)
             if trace_path:

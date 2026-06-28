@@ -39,6 +39,13 @@ def get_pretty_json(data):
         data = data.copy(); data["script"] = data["script"].replace("; ", ";\n  ")
     return json.dumps(data, indent=2, ensure_ascii=False).replace('\\n', '\n')
 
+def _response_truncated(response):
+    marker = "[!!! Response truncated: max_tokens !!!]"
+    stop_reason = str(getattr(response, "stop_reason", "") or "").lower()
+    if stop_reason in {"length", "max_tokens"}:
+        return True
+    return marker in str(getattr(response, "content", "")) or marker in str(getattr(response, "raw", ""))
+
 def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
                       max_turns=40, verbose=True, initial_user_content=None, yield_info=False):
     messages = [
@@ -65,6 +72,21 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             cleaned = _clean_content(response.content)
             if cleaned: yield cleaned + '\n'
         _hook('llm_after', locals())
+
+        if _response_truncated(response):
+            tool_calls = []; tool_results = []; exit_reason = {}
+            next_prompt = (
+                "上一轮模型回复因为 max_tokens 上限被截断。请从中断处继续完成当前任务，"
+                "不要重复已经完成的内容；如果任务仍需要工具调用，直接继续调用工具。"
+            )
+            if verbose:
+                yield "\n\n[AutoContinue] 模型输出达到 max_tokens 上限，下一轮从中断处继续。\n\n"
+            else:
+                yield "[AutoContinue] max_tokens 截断，继续下一轮。\n"
+            next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, next_prompt, exit_reason)
+            _hook('turn_after', locals())
+            messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]
+            continue
 
         if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
         else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}

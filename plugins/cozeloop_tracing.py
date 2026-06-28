@@ -112,6 +112,13 @@ def _safe_call(obj: Any, method: str, *args, **kwargs) -> None:
         pass
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
 def _current_parent():
     stack = getattr(_tls, "stack", [])
     return stack[-1] if stack else None
@@ -213,6 +220,26 @@ if _client:
         if not span:
             return
         response = ctx.get("response")
+        usage = getattr(response, "usage", None) or {}
+        input_tokens = _safe_int(usage.get("input_tokens"))
+        output_tokens = _safe_int(usage.get("output_tokens"))
+        if input_tokens:
+            _safe_call(span, "set_input_tokens", input_tokens)
+        if output_tokens:
+            _safe_call(span, "set_output_tokens", output_tokens)
+        first_response_at_us = _safe_int(getattr(response, "first_response_at_us", None))
+        if first_response_at_us:
+            _safe_call(span, "set_start_time_first_resp", first_response_at_us)
+        usage_tags = {
+            "usage.api_mode": usage.get("api_mode"),
+            "usage.total_tokens": usage.get("total_tokens"),
+            "usage.cached_tokens": usage.get("cached_tokens"),
+            "usage.cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
+            "usage.cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        }
+        usage_tags = {k: v for k, v in usage_tags.items() if v not in (None, "")}
+        if usage_tags:
+            _safe_call(span, "set_tags", usage_tags)
         if _capture_outputs:
             tool_names = []
             for tc in getattr(response, "tool_calls", []) or []:
