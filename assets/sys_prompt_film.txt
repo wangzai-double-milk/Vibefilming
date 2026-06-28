@@ -34,9 +34,9 @@
 ```
 projects/<pid>/
 ├── manifest.json        ← phase / budget（用 file_read 查状态）
-├── storyboard.json      ← 分镜（用 file_write 写入 / file_read 读回）
+├── director_plan.json   ← 全片唯一真相源：段清单 / 镜头节拍 / 资产对照 / 终版状态
 ├── entities/            ← 长期参考资产（gen_image 传 category=entity）
-├── shots/               ← 分镜草图 / 关键帧 / 单镜头视频（镜头级图片传 category=shot）
+├── shots/               ← 故事板/分镜草图图片 / 关键帧 / 单镜头视频（镜头级图片传 category=shot）
 ├── composed/            ← 拼接成片
 ├── audios/              ← BGM 落盘
 ├── reviews/             ← vlm_understand 审片结果

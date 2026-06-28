@@ -27,8 +27,10 @@
 
 > 想看片子进行到哪、花了多少预算？用通用 `file_read` 读 `projects/<pid>/manifest.json` 即可，不再有专门工具。
 
-### 📋 分镜（开拍前的剧本）
-分镜**不再是独立工具**——用通用 `file_write` 把分镜 JSON 写到 `projects/<pid>/storyboard.json`（几个镜头、每镜多长、谁出场、什么机位、做什么动作），用 `file_read` 读回。写法/必含字段见 `skills/skill_movie/SKILL.md`。
+### 📋 编导方案与故事板（开拍前的镜头蓝图）
+全片段清单、镜头节拍、资产对照、剪辑决策和终版状态统一维护在 `projects/<pid>/director_plan.json`，它是全片唯一真相源。
+
+故事板/分镜草图是镜头级图片素材，落在 `projects/<pid>/shots/`，用于给视频生成提供构图与节拍蓝图。复杂动态、反转或多关键信息段要画成可见分格的分镜草图；单张精修氛围图不能冒充故事板。完整规则见 `skills/skill_movie/SKILL.md` 和 `skills/skill_director/SKILL.md`。
 
 ### 🎭 角色 / 道具 / 场景（保证前后长得一样）
 没有专门的"角色档案"工具——一个角色/道具/场景**就是几张图**：

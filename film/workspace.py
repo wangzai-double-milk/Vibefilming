@@ -2,9 +2,9 @@
 
 每个项目 = projects/<project_id>/  目录，结构：
   manifest.json          ← 项目状态（budget / entities / 元信息）
-  storyboard.json        ← 分镜：title/duration/ratio/shots[]/entities_planned[]
+  director_plan.json     ← 全片唯一真相源：段清单 / 镜头节拍 / 资产对照 / 终版状态
   entities/              ← 角色/道具/场景等长期参考资产（gen_image category=entity）
-  shots/                 ← 故事板/分镜草图/关键帧等镜头级素材（gen_image category=shot）+ 镜头视频（gen_video_t2v）
+  shots/                 ← 故事板/分镜草图图片、关键帧等镜头级素材（gen_image category=shot）+ 镜头视频（gen_video_t2v）
                           文件名由 agent 按项目语义自定，只要求稳定、可读、可回查；
                           工具层不规定固定后缀或固定命名模板。
   audios/                ← BGM 等音频产物（gen_audio_bgm 落盘到这里）
