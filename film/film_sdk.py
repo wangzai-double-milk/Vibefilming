@@ -850,7 +850,7 @@ def video_concat(clips: list, save_path: Path, crossfade: float = 0.3,
         filters.append(
             f"[{clip_input}:v]"
             f"setpts=PTS-STARTPTS,"
-            f"fps=30,"
+            f"fps=24,"
             f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
             f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
             f"setsar=1,format=yuv420p"
