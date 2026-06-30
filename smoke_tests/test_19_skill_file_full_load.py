@@ -1,8 +1,11 @@
-"""file_read 对 skill 文件必须整篇返回；其余文件顺序截断 + 续读提示，不掐中段。
+"""skill 文件必须整篇进上下文——读入口和历史压缩出口两端都不许掐中段。
 
 回归背景：曾因 do_file_read 用 smart_format「掐头去尾」截断，且一轮批量读 6 个文件
 时每个预算被压到 ~2500 字符，导致 skill 正中段（故事板红线、写实词红线）被静默 omit，
-模型根本没读到规则。本测试锁死「skill 整篇 + 非 skill 顺序截断」不变量。
+模型根本没读到规则。后续又发现历史压缩 compress_history_tags 的锚点额度（12000）小于
+skill 实际长度（~12900），多轮后会把同样的中段掐掉，退回老 bug。本测试锁死两端不变量：
+(A) file_read 读入时 skill 整篇返回、其余文件顺序截断；
+(B) 历史压缩时 skill 正文整篇保留、不掐中段。
 """
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ from _common import ROOT, banner, ok
 sys.path.insert(0, str(ROOT))
 
 import ga
+import llmcore
 
 
 def _assert(cond, msg):
@@ -74,7 +78,27 @@ def main():
     _assert("[内容过长·已顺序截断]" in big, "非 skill 大文件没有被截断保护")
     ok("非 skill 大文件仍走顺序截断 + 续读提示")
 
-    ok("skill 整篇 / 非 skill 顺序截断 不变量已锁定")
+    # 6) 历史压缩出口：skill 正文经 compress_history_tags 多轮压缩后仍整篇保留
+    skill_body = _simulate_do_file_read("skills/skill_director/SKILL.md", tool_num=6)
+    _assert(len(skill_body) > 12000, "前置条件：skill 正文应超过锚点额度 12000，否则测不出隐患")
+    messages = [
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": skill_body},
+        ]},
+    ] + [{"role": "assistant", "content": f"step {i}"} for i in range(11)]
+    old_cd = getattr(llmcore.compress_history_tags, "_cd", 0)
+    try:
+        llmcore.compress_history_tags(messages, keep_recent=10, force=True, interval=1)
+    finally:
+        llmcore.compress_history_tags._cd = old_cd
+    compressed = messages[0]["content"][0]["content"]
+    _assert("...[Truncated]..." not in compressed, "skill 正文被历史压缩掐中段了（豁免失效）")
+    for word in ["多宫格", "手绘线稿", "photorealistic", "## 七、故事板", "## 十、交付"]:
+        _assert(word in compressed, f"历史压缩后红线/章节 {word} 丢失")
+    _assert(len(compressed) == len(skill_body), "skill 正文长度被历史压缩改变（应原样保留）")
+    ok(f"历史压缩出口：skill 正文整篇保留（{len(compressed)} 字符），红线全在")
+
+    ok("skill 整篇 / 非 skill 顺序截断 不变量已锁定（读入口 + 压缩出口两端）")
     return True
 
 

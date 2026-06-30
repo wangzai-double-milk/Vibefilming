@@ -137,8 +137,13 @@ def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, in
     _anchor_pat = re.compile(
         r'(?:skills/[^"\']+/SKILL\.md|director_plan\.json|script\.json|manifest\.json|reviews/[^"\']+\.json)'
     )
+    # skill 规则文件是方法论唯一真相源，必须整篇留在上下文里：file_read 读入时已豁免截断，
+    # 历史压缩这条路径也要一并豁免，否则多轮后又会把正中段（故事板红线/写实词红线）掐掉，
+    # 退回老 bug。SKILL.md 正文必带 `name: skill-` frontmatter，以此识别、识别到就原样保留。
+    _skill_body_pat = re.compile(r'(?m)^\s*\d*\|?\s*name:\s*skill-')
     def _trunc_str(s, limit=None):
         if not isinstance(s, str): return s
+        if limit is None and _skill_body_pat.search(s): return s  # skill 正文整篇不截断
         limit = limit or (ANCHOR_CONTEXT_MAX_LEN if _anchor_pat.search(s) else max_len)
         return s[:limit//2] + '\n...[Truncated]...\n' + s[-limit//2:] if len(s) > limit else s
     def _trunc(text):
