@@ -253,6 +253,31 @@ def smart_format(data, max_str_len=100, omit_str=' ... '):
     if len(data) < max_str_len + len(omit_str)*2: return data
     return f"{data[:max_str_len//2]}{omit_str}{data[-max_str_len//2:]}"
 
+def _is_skill_doc(path):
+    """skills/<name>/SKILL.md 这类 skill 规则文件——它们是方法论的唯一真相源，
+    必须整篇进上下文，绝不能掐头去尾把中段规则静默丢掉。"""
+    p = str(path).replace("\\", "/")
+    return os.path.basename(p) == "SKILL.md" and "skills" in p.split("/")
+
+def truncate_keep_head(text, max_len):
+    """顺序截断：保留开头、丢弃尾部，并明确提示还有多少没读、怎么续读。
+    不再掐头去尾（旧 smart_format 会把文件正中段整段 omit 掉造成静默丢失）。"""
+    if not isinstance(text, str): text = str(text)
+    if len(text) <= max_len: return text
+    head = text[:max_len]
+    nl = head.rfind('\n')
+    if nl > max_len // 2: head = head[:nl]   # 尽量在行边界切，避免半行
+    remaining = len(text) - len(head)
+    cont = ""
+    last_no = None
+    for mm in re.finditer(r'(?m)^(\d+)\|', head):
+        last_no = mm.group(1)
+    if last_no is not None:
+        cont = f"，请用 file_read(start={int(last_no)+1}) 续读后续行"
+    return (head + f"\n\n[内容过长·已顺序截断] 仅显示前 {len(head)} 字符，还有约 {remaining} "
+            f"字符未读{cont}。这是顺序截断不是省略中段，但你只看到了开头部分——"
+            f"必须读完整个文件后再下结论，不要基于不完整内容判断。")
+
 def consume_file(dr, file):
     if dr and os.path.exists(os.path.join(dr, file)): 
         with open(os.path.join(dr, file), encoding='utf-8', errors='replace') as f: content = f.read()
@@ -438,12 +463,19 @@ class GenericAgentHandler(BaseHandler):
         count = args.get("count", 200)
         keyword = args.get("keyword")
         show_linenos = args.get("show_linenos", True)
+        is_skill = _is_skill_doc(path)
+        # skill 规则文件是方法论唯一真相源，必须整篇进上下文：忽略小 count，一次读全。
+        if is_skill and not keyword:
+            count = max(count, 100000)
         result = file_read(path, start=start, keyword=keyword,
                            count=count, show_linenos=show_linenos)
         if show_linenos and not result.startswith("Error:"): result = '由于设置了show_linenos，以下返回信息为：(行号|)内容 。\n' + result 
         if ' ... [TRUNCATED]' in result: result += '\n\n（某些行被截断，如需完整内容可改用 code_run 读取）'
-        maxlen = 15000 // args.get('_tool_num', 1)
-        result = smart_format(result, max_str_len=maxlen, omit_str='\n\n[omitted long content]\n\n')
+        # skill 文件绝不截断——整篇返回，绝不掐头去尾。其余文件用顺序截断 + 续读提示，
+        # 不再用 smart_format 掐头去尾（旧逻辑会把正中段整段丢掉造成规则静默缺失）。
+        if not (is_skill and not result.startswith("Error:")):
+            maxlen = 60000 // args.get('_tool_num', 1)
+            result = truncate_keep_head(result, maxlen)
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         log_memory_access(path)
         if 'memory' in path or 'skills' in path or 'sop' in path: 
