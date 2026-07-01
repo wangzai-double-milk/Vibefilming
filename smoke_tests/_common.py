@@ -44,6 +44,13 @@ def get_ark_base() -> str:
     )
 
 
+def get_model(name: str, default: str) -> str:
+    return (
+        _config_get("ark", "models", name, default="")
+        or default
+    )
+
+
 def get_extra(name: str, default=None):
     """读取额外凭证：统一来自 vibefilming.config.json。"""
     mapping = {
@@ -51,10 +58,6 @@ def get_extra(name: str, default=None):
         "VOLC_SK": ("volc", "sk"),
         "VOD_AK": ("volc", "ak"),
         "VOD_SK": ("volc", "sk"),
-        "TTS_APP_ID": ("tts", "app_id"),
-        "TTS_ACCESS_TOKEN": ("tts", "access_token"),
-        "TTS_CLUSTER": ("tts", "cluster"),
-        "TTS_VOICE": ("tts", "voice"),
     }
     if name in mapping:
         return _config_get(*mapping[name], default=default)

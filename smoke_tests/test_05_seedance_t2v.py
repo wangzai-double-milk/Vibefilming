@@ -6,14 +6,7 @@
 import json
 import time
 import urllib.request
-from _common import banner, ok, fail, info, get_ark_key, get_ark_base
-
-CANDIDATE_MODELS = [
-    "doubao-seedance-2-0-260128",        # 标准（Pro 档质量）
-    "doubao-seedance-2-0-fast-260128",   # Fast 档
-    "doubao-seedance-1-0-pro-250528",    # 1.0 兜底
-    "doubao-seedance-1-0-lite-t2v-250428",
-]
+from _common import banner, ok, fail, info, get_ark_key, get_ark_base, get_model
 
 
 def submit(model: str, key: str):
@@ -51,31 +44,25 @@ def main():
         fail("缺少 ark.api_key")
         return False
 
-    last_err = None
-    for m in CANDIDATE_MODELS:
-        info(f"尝试 model = {m}")
-        try:
-            sub = submit(m, key)
-            task_id = sub.get("id") or sub.get("task_id")
-            if not task_id:
-                info(f"返回里没有 task_id：{sub}")
-                continue
-            ok(f"任务已提交，task_id = {task_id}")
-            time.sleep(2)
-            st = query(task_id, key)
-            ok(f"状态查询成功：status = {st.get('status')}")
-            info("（出片需 1-3 分钟，本 smoke 不等待落地）")
-            return True
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", "ignore")
-            last_err = f"HTTP {e.code}: {body[:300]}"
-            info(f"失败：{last_err}")
-        except Exception as e:
-            last_err = str(e)
-            info(f"失败：{e}")
-
-    fail(f"Seedance 提交失败：{last_err}")
-    info("可能原因：账号未开通视频生成 / 接口路径已变更（参考 Ark 文档『视频生成』）")
+    model = get_model("video", "doubao-seedance-2-0-260128")
+    info(f"model = {model}")
+    try:
+        sub = submit(model, key)
+        task_id = sub.get("id") or sub.get("task_id")
+        if not task_id:
+            fail(f"返回里没有 task_id：{sub}")
+            return False
+        ok(f"任务已提交，task_id = {task_id}")
+        time.sleep(2)
+        st = query(task_id, key)
+        ok(f"状态查询成功：status = {st.get('status')}")
+        info("（出片需 1-3 分钟，本 smoke 不等待落地）")
+        return True
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")
+        fail(f"HTTP {e.code}: {body[:300]}")
+    except Exception as e:
+        fail(str(e))
     return False
 
 

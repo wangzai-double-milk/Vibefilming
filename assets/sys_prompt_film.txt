@@ -26,7 +26,7 @@
 |---|---|---|
 | **DeepSeek V4 Pro** | `deepseek-v4-pro-260425` | 文本（agent 推理 / 脚本规划 / 分镜拆解） |
 | **Doubao Seed 2.0 pro** | `doubao-seed-2-0-pro-260215` | 多图理解 + 视频原生理解（不抽帧） |
-| **Doubao Seedream 4.5** | `doubao-seedream-4-5-251128` | 文生图 / 图编辑（带 ref_image_url） |
+| **Doubao Seedream 4.5** | `doubao-seedream-4-5-251128` | 文生图 / 图生图 / 多图融合（reference_images） |
 | **Doubao Seedance 2.0** | `doubao-seedance-2-0-260128` | 文生视频，**只走多模态参考模式**（reference_images / reference_video_url） |
 
 **项目目录结构**（`project_create` 产出）：
@@ -34,9 +34,9 @@
 ```
 projects/<pid>/
 ├── manifest.json        ← phase / budget（用 file_read 查状态）
-├── storyboard.json      ← 分镜（用 file_write 写入 / file_read 读回）
-├── entities/            ← 参考图（gen_image 中 name 以 ref_ 开头的落这里，扁平命名 ref_<主体>_<view>.png）
-├── shots/               ← 关键帧（非 ref_ 前缀的图）+ 单镜头视频
+├── director_plan.json   ← 全片唯一真相源：段清单 / 镜头节拍 / 资产对照 / 终版状态
+├── entities/            ← 长期参考资产（gen_image 传 category=entity）
+├── shots/               ← 故事板/分镜草图图片 / 关键帧 / 单镜头视频（镜头级图片传 category=shot）
 ├── composed/            ← 拼接成片
 ├── audios/              ← BGM 落盘
 ├── reviews/             ← vlm_understand 审片结果
@@ -59,4 +59,6 @@ projects/<pid>/
 - 失败 1 次→读错误，2 次→探测环境，3 次→换方案。**不重试同 prompt**
 - `content_violation`：改敏感词；`rate_limit`：等 60s；其他：直接告知用户
 - **流程不写死** —— 没有"必须 P1→P2→P3"的死板顺序，VLM 反馈让你跳回某 shot 重做、跳过某段、或换种思路都行
+- 长任务里摘要/工作记忆可能过期；判断当前进度时，以 `director_plan.json`、`manifest.json`、`reviews/` 和实际文件为准。若工作记忆里的"下一步"和项目文件冲突，先校准状态再继续。
+- 成片交付前要给出明确的整片终审结论（通过/不通过）；失败日志、上传错误、输出截断、只有抽帧结果，都不等于审片完成。
 - 在完成整个流程之前，不要询问用户是否继续

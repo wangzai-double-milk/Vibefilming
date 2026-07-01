@@ -5,7 +5,7 @@
   - 失败抛具体 RuntimeError（包含 error_code / status）
   - 长任务（Seedance）拆成 submit + query 两个函数，agent 自己轮询
   - 所有产物落到指定路径，返回 path（agent 可后续读取）
-  - VLM / TTS / GenBGM 缺凭证时返回 stub 错误，不静默失败
+  - VLM / GenBGM 缺凭证时返回 stub 错误，不静默失败
 """
 import base64
 import json
@@ -245,10 +245,22 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
     # Seed 2.1 Pro 图像理解在复杂审查题上可能超过默认 180s；
     # 对齐视频理解路径，给 VLM 审图保留更长推理时间。
     raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=600)
+    try:
+        choice0 = raw["choices"][0]
+        msg = choice0.get("message", {}) or {}
+        content = msg.get("content")
+        finish = choice0.get("finish_reason", "")
+        if content is None or not isinstance(content, str) or not content.strip():
+            raise RuntimeError(
+                f"chat/completions VLM(图片) 返回空/非文本 content，finish_reason={finish}, "
+                f"msg_keys={list(msg.keys())}, raw_keys={list(raw.keys())}"
+            )
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError(f"chat/completions VLM(图片) 返回结构异常：{json.dumps(raw, ensure_ascii=False)[:500]}")
     return {"raw": raw, "body": body}
 
 
-def upload_file_ark(file_path: Path, fps: float = 1.0, timeout: int = 600) -> dict:
+def upload_file_ark(file_path: Path, fps: float = 1.0, timeout: int = 1800) -> dict:
     """上传本地文件到 ark Files API，返回文件元信息（含 id）。
     用于 >50MB 大文件：base64 内嵌进 chat/completions 会被网关拒收（Broken pipe / 413），
     官方要求改走 Files API + Responses API。
@@ -264,7 +276,7 @@ def upload_file_ark(file_path: Path, fps: float = 1.0, timeout: int = 600) -> di
     return r
 
 
-def wait_file_active(file_id: str, timeout: int = 300, interval: int = 3) -> dict:
+def wait_file_active(file_id: str, timeout: int = 1200, interval: int = 3) -> dict:
     """轮询文件预处理状态，直到 active 才能在 Responses API 中使用。
     抛 TimeoutError / RuntimeError（失败状态）。
     """
@@ -286,11 +298,7 @@ def delete_file_ark(file_id: str) -> dict:
     return _http_delete(f"{get_ark_base()}/files/{file_id}")
 
 
-def _responses_extract_text(raw: dict) -> str:
-    """从 Responses API 返回里抽出纯文本回答。
-    Responses 的输出结构：output 是 item 列表，message item 的 content 里
-    type=output_text 的项带 text。做防御式解析，兼容多种字段命名。
-    """
+def _responses_collect_text(raw: dict) -> str:
     # 优先 SDK 风格的 output_text 便捷字段
     if isinstance(raw.get("output_text"), str) and raw["output_text"].strip():
         return raw["output_text"].strip()
@@ -304,8 +312,48 @@ def _responses_extract_text(raw: dict) -> str:
     return "\n".join(texts).strip()
 
 
+def _responses_extract_text(raw: dict) -> str:
+    """从 Responses API 返回里抽出纯文本回答。
+    Responses 的输出结构：output 是 item 列表，message item 的 content 里
+    type=output_text 的项带 text。做防御式解析，兼容多种字段命名。
+
+    检查 Responses API 非成功状态并抛出有意义的错误，避免静默返回空字符串。
+    """
+    # 检查顶层状态：completed / failed / incomplete 等
+    status = raw.get("status")
+    if status and status not in ("completed",):
+        inc = raw.get("incomplete_details") or {}
+        err = raw.get("error") or {}
+        reason = inc.get("reason") or err.get("message") or str(inc) or str(err) or status
+        raise RuntimeError(
+            f"Responses API 返回非完成状态 status={status}, reason={reason}, "
+            f"raw_id={raw.get('id', '?')}"
+        )
+
+    # 收集 refusal 信息（内容安全/审核拦截）
+    refusals = []
+    for item in raw.get("output", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for c in item.get("content", []) or []:
+            if isinstance(c, dict) and c.get("type") in ("refusal", "content_filter"):
+                refusals.append(c.get("refusal") or c.get("text") or c.get("reason", str(c)))
+    if refusals:
+        raise RuntimeError(f"Responses API 内容被拦截/拒绝：{'; '.join(refusals[:3])}")
+
+    answer = _responses_collect_text(raw)
+    if not answer:
+        # 解析完毕但没有拿到任何文本，说明返回结构有意外，抛出原始信息供排查
+        raise RuntimeError(
+            "Responses API 返回中未提取到任何文本回答，可能是响应格式变更或模型未输出。"
+            f" top_keys={list(raw.keys())}, output_sample={json.dumps(raw.get('output', [])[:2], ensure_ascii=False)[:500]}"
+        )
+    return answer
+
+
 def _video_understand_via_files(video: str, text: str, fps: float,
-                                system: Optional[str], max_tokens: int) -> dict:
+                                system: Optional[str], max_tokens: int,
+                                temperature: float = 0.1) -> dict:
     """大文件路径：Files API 上传 → 等 active → Responses API 引用 file_id。
     返回归一成 chat/completions 形状的 {raw, body}，让上层调用方无需区分大小路径。
     用完删除上传文件。
@@ -330,15 +378,34 @@ def _video_understand_via_files(video: str, text: str, fps: float,
             "model": MODEL_VLM,
             "input": input_msgs,
             "max_output_tokens": max_tokens,
+            "temperature": temperature,
         }
-        raw = _http_post(f"{get_ark_base()}/responses", body, timeout=600)
-        answer = _responses_extract_text(raw)
+        raw = _http_post(f"{get_ark_base()}/responses", body, timeout=1800)
+        incomplete = None
+        try:
+            answer = _responses_extract_text(raw)
+        except RuntimeError as e:
+            inc = raw.get("incomplete_details") or {}
+            reason = inc.get("reason", "")
+            partial = _responses_collect_text(raw)
+            if raw.get("status") == "incomplete" and reason == "length" and partial:
+                incomplete = {
+                    "status": raw.get("status"),
+                    "reason": reason,
+                    "raw_id": raw.get("id"),
+                    "message": str(e),
+                }
+                answer = "【未完成，不可作为通过结论：VLM 输出达到长度上限，请拆分审查问题后继续。】\n" + partial
+            else:
+                raise
         # 归一成 chat/completions 形状，保持调用方 raw["choices"][0]["message"]["content"] 不变
         normalized = {
             "choices": [{"message": {"content": answer}}],
             "_responses_raw": raw,
             "_via": "files_api",
         }
+        if incomplete:
+            normalized["_incomplete"] = incomplete
         return {"raw": normalized, "body": body}
     finally:
         if file_id:
@@ -351,6 +418,107 @@ def _video_understand_via_files(video: str, text: str, fps: float,
 # base64 后会膨胀 4/3，chat/completions 网关上限约 50MB，
 # 原文件 > 35MB 时 base64 后逼近上限，直接走 Files API 更稳。
 _VIDEO_INLINE_MAX_BYTES = 35 * 1024 * 1024
+_ARK_FILES_MAX_BYTES = 512 * 1024 * 1024
+_VLM_PROXY_TARGET_BYTES = 500 * 1024 * 1024
+
+
+def _mb(n: int) -> float:
+    return n / (1024 * 1024)
+
+
+def prepare_video_for_vlm(video: str, *, force: bool = False,
+                          files_max_bytes: int = _ARK_FILES_MAX_BYTES,
+                          target_bytes: int = _VLM_PROXY_TARGET_BYTES,
+                          preset: str = "ultrafast") -> dict:
+    """给 VLM 上传准备本地视频代理文件。
+
+    Ark Files API 对单文件有 512MB 上限。4K 成片很容易贴近或超过该上限，
+    这里做的是传输/审核代理压缩，不重新生成创作内容。音频默认 copy，避免依赖
+    shell PATH 里的 ffmpeg 音频编码器；视频用项目内 imageio-ffmpeg 统一转码。
+    """
+    if video.startswith(("http://", "https://")):
+        return {"path": video, "prepared": False, "reason": "remote_url"}
+    src = Path(video)
+    if not src.exists():
+        return {"path": video, "prepared": False, "reason": "missing_local_file"}
+
+    source_size = src.stat().st_size
+    if not force and source_size <= files_max_bytes:
+        return {
+            "path": str(src),
+            "prepared": False,
+            "reason": "within_files_api_limit",
+            "source_size_bytes": source_size,
+            "source_size_mb": round(_mb(source_size), 2),
+            "files_api_limit_mb": round(_mb(files_max_bytes), 2),
+        }
+
+    out = src.with_name(f"{src.stem}_vlm_review.mp4")
+    if out.exists() and out.stat().st_mtime >= src.stat().st_mtime and out.stat().st_size <= target_bytes:
+        proxy_size = out.stat().st_size
+        return {
+            "path": str(out),
+            "prepared": True,
+            "cached": True,
+            "source_path": str(src),
+            "source_size_bytes": source_size,
+            "source_size_mb": round(_mb(source_size), 2),
+            "proxy_size_bytes": proxy_size,
+            "proxy_size_mb": round(_mb(proxy_size), 2),
+            "files_api_limit_mb": round(_mb(files_max_bytes), 2),
+            "ffmpeg": FFMPEG,
+        }
+
+    duration = None
+    try:
+        duration = probe_duration(str(src))
+    except Exception:
+        pass
+    timeout = max(600, int((duration or 120) * 20))
+    attempts = [
+        {"height": 1080, "crf": 30},
+        {"height": 720, "crf": 28},
+        {"height": 540, "crf": 30},
+    ]
+    last_error = None
+    for attempt in attempts:
+        try:
+            _run_ffmpeg([
+                "-i", str(src),
+                "-map", "0:v:0", "-map", "0:a:0?",
+                "-vf", f"scale=-2:{attempt['height']},setsar=1",
+                "-c:v", "libx264", "-preset", preset, "-crf", str(attempt["crf"]),
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                str(out),
+            ], timeout=timeout)
+            proxy_size = out.stat().st_size
+            if proxy_size <= target_bytes:
+                return {
+                    "path": str(out),
+                    "prepared": True,
+                    "cached": False,
+                    "source_path": str(src),
+                    "source_size_bytes": source_size,
+                    "source_size_mb": round(_mb(source_size), 2),
+                    "proxy_size_bytes": proxy_size,
+                    "proxy_size_mb": round(_mb(proxy_size), 2),
+                    "files_api_limit_mb": round(_mb(files_max_bytes), 2),
+                    "target_size_mb": round(_mb(target_bytes), 2),
+                    "height": attempt["height"],
+                    "crf": attempt["crf"],
+                    "audio": "copy",
+                    "ffmpeg": FFMPEG,
+                }
+            last_error = RuntimeError(
+                f"VLM proxy 仍过大：{_mb(proxy_size):.1f}MB > {_mb(target_bytes):.1f}MB"
+            )
+        except Exception as e:
+            last_error = e
+    raise RuntimeError(
+        f"prepare_video_for_vlm 压缩失败，source={src}, size={_mb(source_size):.1f}MB, "
+        f"ffmpeg={FFMPEG}, last_error={last_error}"
+    )
 
 
 def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
@@ -363,10 +531,23 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
         否则 base64 内嵌会被网关拒收（Broken pipe / 413）。
     system: 可选系统提示（设定 VLM 的角色/输出格式）。
     """
+    prepared_video = None
     if not video.startswith(("http://", "https://")):
         p = Path(video)
+        if p.exists() and p.stat().st_size > _ARK_FILES_MAX_BYTES:
+            prepared_video = prepare_video_for_vlm(
+                video,
+                files_max_bytes=_ARK_FILES_MAX_BYTES,
+                target_bytes=_VLM_PROXY_TARGET_BYTES,
+            )
+            video = prepared_video["path"]
+            p = Path(video)
         if p.exists() and p.stat().st_size > _VIDEO_INLINE_MAX_BYTES:
-            return _video_understand_via_files(video, text, fps, system, max_tokens)
+            data = _video_understand_via_files(video, text, fps, system, max_tokens, temperature)
+            if prepared_video:
+                data["prepared_video"] = prepared_video
+                data["video_uploaded"] = video
+            return data
 
     if video.startswith(("http://", "https://")):
         video_url = video
@@ -392,21 +573,38 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
         "temperature": temperature,
     }
     
-    # 视频原生理解（推理模型）单次推理常 >180s，对齐大文件路径用 600s 超时。
-    raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=600)
-    return {"raw": raw, "body": body}
+    # 视频原生理解（推理模型）单次推理常 >180s，长片/4K 整片更久，给足 1800s 超时。
+    raw = _http_post(f"{get_ark_base()}/chat/completions", body, timeout=1800)
+    # chat/completions 路径同样做防御：检查 finish_reason 与 content
+    try:
+        choice0 = raw["choices"][0]
+        msg = choice0.get("message", {}) or {}
+        content = msg.get("content")
+        finish = choice0.get("finish_reason", "")
+        if content is None or not isinstance(content, str) or not content.strip():
+            raise RuntimeError(
+                f"chat/completions VLM 返回空/非文本 content，finish_reason={finish}, "
+                f"msg_keys={list(msg.keys())}, raw_keys={list(raw.keys())}"
+            )
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError(f"chat/completions VLM 返回结构异常：{json.dumps(raw, ensure_ascii=False)[:500]}")
+    data = {"raw": raw, "body": body}
+    if prepared_video:
+        data["prepared_video"] = prepared_video
+        data["video_uploaded"] = video
+    return data
 
 
 # ============== Seedream（文生图 / 图编辑统一接口）==============
 def gen_image(prompt: str, save_path: Path,
-              ref_image_url=None,
+              reference_images=None,
               size: str = "2048x2048",
-              watermark: bool = False) -> dict:
+              watermark: bool = True) -> dict:
     """Seedream 4.0 — 文生图 / 图编辑 / 多图融合。返回 {url, path, raw}。
 
-    ref_image_url: None=文生图；str=单图编辑；list[str]=多图融合（最多 14 张）。
+    reference_images: None=文生图；str=单图编辑；list[str]=多图融合（最多 14 张）。
         可传本地 path（自动 base64 内嵌）或 http(s) url；优先传本地 path，省去转抄长签名 url。
-    watermark: 是否加「AI 生成」水印（官方默认 true，本 SDK 默认 false）。
+    watermark: 是否加「AI 生成」水印/标识（官方默认 true，本 SDK 默认 true）。
     """
     body = {
         "model": MODEL_IMG,
@@ -416,11 +614,11 @@ def gen_image(prompt: str, save_path: Path,
         "watermark": watermark,
         "n": 1,
     }
-    if ref_image_url:
-        if isinstance(ref_image_url, (list, tuple)):
-            body["image"] = [_img_to_url(x) for x in ref_image_url]
+    if reference_images:
+        if isinstance(reference_images, (list, tuple)):
+            body["image"] = [_img_to_url(x) for x in reference_images]
         else:
-            body["image"] = _img_to_url(ref_image_url)
+            body["image"] = _img_to_url(reference_images)
     raw = _http_post(f"{get_ark_base()}/images/generations", body)
     url = raw["data"][0]["url"]
     p = _download(url, Path(save_path))
@@ -432,25 +630,20 @@ def submit_video_task(prompt: str,
                       reference_images: Optional[list] = None,
                       reference_video_url: Optional[str] = None,
                       duration: Optional[int] = None,
-                      generate_audio: bool = False,
+                      generate_audio: bool = True,
                       resolution: str = "720p",
                       ratio: str = "16:9",
-                      seed: Optional[int] = None,
-                      camera_fixed: Optional[bool] = None) -> dict:
-    """提交 Seedance 任务（**仅多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
+                      seed: Optional[int] = None) -> dict:
+    """提交 Seedance 任务（**多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
 
-    本 SDK 已经统一只走「t2v + 多模态参考」一条路径——这是官方做精良
-    商业短剧（如水果茶广告 demo）的标准姿势：
+    本 SDK 统一走「t2v + 多模态参考」一条路径——商业短剧/广告类项目的标准姿势：
       - prompt 里详细描述本镜场景/动作/构图，并用文字暗示首尾帧
       - reference_images：最多 9 张图（角色三视图 + 关键道具 + 概念图等）
       - reference_video_url：链式生成第 N 段（N≥2）时把上一段视频塞进来，
-        让模型看到完整动作连续性，比仅"末帧静止参考"稳得多
-      - generate_audio=True → Seedance 2.0 原生生成同步音频
+        让模型看到完整动作连续性
+      - generate_audio=True → Seedance 2.0 原生生成同步音频（本 SDK 默认开启）
       - duration 4-15 秒；不传由模型自定（一般 5s）
-
-    注意：**已不再支持首尾帧（i2v）模式**，原因：
-      - first_frame/last_frame 与 reference_image/video 互斥，鱼与熊掌不可兼得
-      - 多模态参考能塞 9 图 + 3 视频 + 3 音频，控制力远胜首尾帧
+      - resolution 支持 480p / 720p / 1080p / 4k；默认 720p，调用方按交付规格选择
     """
     content = [{"type": "text", "text": prompt}]
     if reference_images:
@@ -472,6 +665,9 @@ def submit_video_task(prompt: str,
             "video_url": {"url": reference_video_url},
             "role": "reference_video",
         })
+    valid_resolutions = {"480p", "720p", "1080p", "4k"}
+    if resolution not in valid_resolutions:
+        raise ValueError(f"Seedance resolution 只支持 480p/720p/1080p/4k，当前为 {resolution!r}")
     body = {"model": MODEL_VIDEO, "content": content,
             "resolution": resolution, "ratio": ratio}
     if duration:
@@ -480,8 +676,6 @@ def submit_video_task(prompt: str,
         body["generate_audio"] = True
     if seed is not None:
         body["seed"] = int(seed)
-    if camera_fixed is not None:
-        body["camera_fixed"] = bool(camera_fixed)
     raw = _http_post(f"{get_ark_base()}/contents/generations/tasks", body)
     return {"task_id": raw.get("id"), "model": MODEL_VIDEO, "raw": raw, "body": body}
 
@@ -586,20 +780,121 @@ def _audio_fade_filter(fade_in: float = 0.0, fade_out: float = 0.0,
     return ",".join(filters) if filters else "anull"
 
 
-def video_concat(clips: list, save_path: Path) -> dict:
-    """硬拼接（无重编码）。要求所有 clip 编码参数一致。"""
+def probe_video_size(clip: str) -> tuple[int, int]:
+    """探测视频宽高。失败时抛错，避免 concat filter 靠猜导致隐性失败。"""
+    ffprobe = _find_ffprobe()
+    if ffprobe:
+        try:
+            r = subprocess.run(
+                [ffprobe, "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(clip)],
+                capture_output=True, text=True, timeout=15,
+            )
+            s = r.stdout.strip()
+            if "x" in s:
+                w, h = s.split("x", 1)
+                return int(w), int(h)
+        except Exception:
+            pass
+    try:
+        r = subprocess.run(
+            [FFMPEG, "-hide_banner", "-i", str(clip)],
+            capture_output=True, text=True, timeout=30,
+        )
+        import re
+        m = re.search(r"Video:.*?,\s*(\d{2,5})x(\d{2,5})", r.stderr)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    except Exception:
+        pass
+    raise RuntimeError(f"probe_video_size 失败，无法探测视频宽高：{clip}")
+
+
+def video_concat(clips: list, save_path: Path, crossfade: float = 0.3,
+                 fade_in: float = 0.0, fade_out: float = 0.0,
+                 preset: str = "ultrafast") -> dict:
+    """一段/多段拼接。视频硬切，音频在切点做短淡化，统一重编码。
+
+    这里的 crossfade 是切点音频平滑时长：上一段尾部淡出、下一段头部淡入。
+    不做画面重叠，也不改变段落总时长，避免对白/口型相对画面漂移。
+    """
+    if not clips:
+        raise ValueError("video_concat 至少需要 1 个 clip")
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    list_file = save_path.parent / f".concat_{int(time.time()*1000)}.txt"
-    list_file.write_text(
-        "\n".join(f"file '{Path(c).resolve()}'" for c in clips), encoding="utf-8"
-    )
-    try:
-        _run_ffmpeg(["-f", "concat", "-safe", "0",
-                     "-i", str(list_file), "-c", "copy", str(save_path)])
-    finally:
-        list_file.unlink(missing_ok=True)
-    return {"path": str(save_path)}
+
+    durations = [probe_duration(c) for c in clips]
+    target_w, target_h = probe_video_size(clips[0])
+    args = []
+    filters = []
+    concat_inputs = []
+    next_input = 0
+    smooth = max(0.0, float(crossfade or 0.0))
+
+    for i, (clip, duration) in enumerate(zip(clips, durations)):
+        clip_input = next_input
+        args.extend(["-i", str(clip)])
+        next_input += 1
+
+        audio_src = f"[{clip_input}:a]"
+        if not has_audio_stream(clip):
+            args.extend([
+                "-f", "lavfi", "-t", f"{duration:.3f}",
+                "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            ])
+            audio_src = f"[{next_input}:a]"
+            next_input += 1
+
+        v_label = f"v{i}"
+        a_label = f"a{i}"
+        filters.append(
+            f"[{clip_input}:v]"
+            f"setpts=PTS-STARTPTS,"
+            f"fps=24,"
+            f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
+            f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
+            f"setsar=1,format=yuv420p"
+            f"[{v_label}]"
+        )
+
+        fades = []
+        start_fade = float(fade_in or 0.0) if i == 0 else smooth
+        end_fade = float(fade_out or 0.0) if i == len(clips) - 1 else smooth
+        start_fade = min(max(0.0, start_fade), max(0.0, duration / 3.0))
+        end_fade = min(max(0.0, end_fade), max(0.0, duration / 3.0))
+        if start_fade > 0:
+            fades.append(f"afade=t=in:st=0:d={start_fade:.3f}")
+        if end_fade > 0:
+            fades.append(f"afade=t=out:st={max(0.0, duration - end_fade):.3f}:d={end_fade:.3f}")
+        fade_chain = "," + ",".join(fades) if fades else ""
+        filters.append(
+            f"{audio_src}"
+            f"aresample=44100,"
+            f"aformat=sample_rates=44100:channel_layouts=stereo,"
+            f"apad=whole_dur={duration:.3f},"
+            f"atrim=0:{duration:.3f},"
+            f"asetpts=PTS-STARTPTS"
+            f"{fade_chain}"
+            f"[{a_label}]"
+        )
+        concat_inputs.append(f"[{v_label}][{a_label}]")
+
+    filters.append("".join(concat_inputs) + f"concat=n={len(clips)}:v=1:a=1[v][a]")
+    timeout = max(300, int(sum(durations) * 20))
+    _run_ffmpeg([
+        *args,
+        "-filter_complex", ";".join(filters),
+        "-map", "[v]", "-map", "[a]",
+        "-c:v", "libx264", "-preset", preset,
+        "-c:a", "aac", "-movflags", "+faststart",
+        str(save_path),
+    ], timeout=timeout)
+    return {
+        "path": str(save_path),
+        "clips": len(clips),
+        "duration": sum(durations),
+        "audio_smoothing": smooth,
+    }
 
 
 def video_crossfade(clip_a: str, clip_b: str, save_path: Path,
@@ -984,18 +1279,6 @@ def probe_duration(clip: str) -> float:
     raise RuntimeError(f"probe_duration 失败，无法探测视频时长：{clip}")
 
 
-# ============== TTS / GenBGM stub（待 key） ==============
-def tts(text: str, save_path: Path, voice: str = "default") -> dict:
-    """豆包大模型语音合成。需 TTS_APP_ID + TTS_TOKEN。当前返回 stub。"""
-    if not (get_extra("TTS_APP_ID") and get_extra("TTS_TOKEN")):
-        raise RuntimeError(
-            "TTS 凭证缺失：请到 https://console.volcengine.com/speech 开通"
-            "「大模型语音合成」，把 TTS_APP_ID / TTS_TOKEN 填到 "
-            "vibefilming.config.json"
-        )
-    raise NotImplementedError("TTS 实现待补：参考 smoke_tests/test_06_tts.py")
-
-
 # ---- 火山引擎 SigV4 签名（纯标准库实现，避免引入 volcengine SDK） ----
 def _volc_sign_v4(method: str, query: dict, body_bytes: bytes,
                   ak: str, sk: str,
@@ -1085,56 +1368,6 @@ def _volc_call(action: str, body: Optional[dict],
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", "ignore")
         raise RuntimeError(f"VOLC HTTP {e.code} on Action={action}: {body_text[:500]}")
-
-
-def gen_bgm(prompt: str, save_path: Path,
-            duration: int = 60,
-            segments: Optional[list] = None,
-            *,
-            poll: bool = True,
-            poll_interval: float = 5.0,
-            poll_timeout: float = 300.0,
-            enable_input_rewrite: bool = False) -> dict:
-    """火山引擎 GenBGM（Action=GenBGM, Version=2024-08-12, v5.0）。
-
-    Args:
-        prompt: Text 字段，自然语言描述风格/情绪/乐器/场景
-        save_path: 落盘路径（默认 wav，但火山可能返回 mp4 容器，按内容决定）
-        duration: 30-120 秒
-        segments: 可选，[{"Name":"intro","Duration":10}, ...]，
-                  Name ∈ intro/verse/chorus/inst/bridge/outro，
-                  总和需 [30,120]，传入则覆盖 duration
-        poll: True=同步阻塞到拿到 audio_url；False=只回 task_id
-        poll_interval / poll_timeout: 轮询参数
-        enable_input_rewrite: 是否让模型自动改写 prompt
-
-    Returns:
-        poll=True: {"path": str, "audio_url": str, "task_id": str,
-                    "duration": float, "style_info": dict, "raw": dict}
-        poll=False: {"task_id": str}
-
-    Raises:
-        RuntimeError: 凭证缺失 / API 错误 / 50000001 版权校验失败 / 轮询超时
-    """
-    submitted = submit_bgm_task(
-        prompt, duration=duration, segments=segments,
-        enable_input_rewrite=enable_input_rewrite,
-    )
-    task_id = submitted["task_id"]
-    if not poll:
-        return {"task_id": task_id}
-
-    deadline = time.time() + poll_timeout
-    last = None
-    while time.time() < deadline:
-        last = query_bgm_task(task_id, save_path=save_path)
-        st = last["status"]
-        if st == "succeeded":
-            return last
-        if st == "failed":
-            raise RuntimeError(f"GenBGM 任务失败 task_id={task_id}: {last.get('error')}")
-        time.sleep(poll_interval)
-    raise TimeoutError(f"GenBGM 轮询超时 task_id={task_id}, last={last}")
 
 
 def submit_bgm_task(prompt: str,

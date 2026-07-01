@@ -1,5 +1,7 @@
 # Subagent 调用 SOP
 
+> **兼容性说明**：本文件描述的是仓库旧版 CLI subagent 工作法。只有当前运行环境确实支持 subagent，且用户/系统授权使用时，才按这里执行；否则不要为了满足本 SOP 强行启动子进程，改由主 agent 顺序执行或用当前系统提供的 subagent 工具。
+
 ## 文件IO协议
 
 - 目录：`temp/{task_name}/`（cwd在temp/时即`./{task_name}/`）
@@ -8,7 +10,7 @@
 - 自动后台启动，print PID then exit
 - subagent的cwd还是temp，不是task目录
 - input：目标+约束即可，subagent同等智能。**禁写步骤/过度描述**，大量数据给路径
-- 可选fork功能（继承对话上下文）: code_run(inline_eval=True)，将变量history（自动注入,str）写入task目录下_history.json
+- 可选 fork 功能（继承对话上下文）：只在当前环境提供对应能力时使用；没有对应工具时跳过，不要写死旧工具名。
 - 通信：output.txt(append,`[ROUND END]`=轮完成) → 写reply.txt继续 → 不写10min退出。reply后输出为output1/2/3.txt(同格式)
 - 干预文件：`_stop`(当轮结束退出) | `_keyinfo`(注入working memory) | `_intervene`(追加指令)
 - 监察模式：**主agent空闲时应读output观察进度，必要时用干预文件纠偏，禁止无脑长时间sleep**

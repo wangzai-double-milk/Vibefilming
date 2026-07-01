@@ -13,11 +13,10 @@
     "ak": "",
     "sk": ""
   },
-  "tts": {
-    "app_id": "",
-    "access_token": "",
-    "cluster": "volcano_tts",
-    "voice": "BV001_streaming"
+  "cozeloop": {
+    "enabled": false,
+    "workspace_id": "",
+    "api_token": ""
   },
   "feishu": {
     "app_id": "",

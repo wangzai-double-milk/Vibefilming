@@ -253,11 +253,56 @@ def smart_format(data, max_str_len=100, omit_str=' ... '):
     if len(data) < max_str_len + len(omit_str)*2: return data
     return f"{data[:max_str_len//2]}{omit_str}{data[-max_str_len//2:]}"
 
+def _is_skill_doc(path):
+    """skills/<name>/SKILL.md 这类 skill 规则文件——它们是方法论的唯一真相源，
+    必须整篇进上下文，绝不能掐头去尾把中段规则静默丢掉。"""
+    p = str(path).replace("\\", "/")
+    return os.path.basename(p) == "SKILL.md" and "skills" in p.split("/")
+
+def truncate_keep_head(text, max_len):
+    """顺序截断：保留开头、丢弃尾部，并明确提示还有多少没读、怎么续读。
+    不再掐头去尾（旧 smart_format 会把文件正中段整段 omit 掉造成静默丢失）。"""
+    if not isinstance(text, str): text = str(text)
+    if len(text) <= max_len: return text
+    head = text[:max_len]
+    nl = head.rfind('\n')
+    if nl > max_len // 2: head = head[:nl]   # 尽量在行边界切，避免半行
+    remaining = len(text) - len(head)
+    cont = ""
+    last_no = None
+    for mm in re.finditer(r'(?m)^(\d+)\|', head):
+        last_no = mm.group(1)
+    if last_no is not None:
+        cont = f"，请用 file_read(start={int(last_no)+1}) 续读后续行"
+    return (head + f"\n\n[内容过长·已顺序截断] 仅显示前 {len(head)} 字符，还有约 {remaining} "
+            f"字符未读{cont}。这是顺序截断不是省略中段，但你只看到了开头部分——"
+            f"必须读完整个文件后再下结论，不要基于不完整内容判断。")
+
 def consume_file(dr, file):
     if dr and os.path.exists(os.path.join(dr, file)): 
         with open(os.path.join(dr, file), encoding='utf-8', errors='replace') as f: content = f.read()
         os.remove(os.path.join(dr, file))
         return content
+
+def _summary_only_pending_action(content):
+    """Detect progress-only replies that promise more work but forgot tool calls."""
+    if not content:
+        return ""
+    m = re.search(r"<summary>(.*?)</summary>", content, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return ""
+    residual = re.sub(r"<thinking>[\s\S]*?</thinking>", "", content, flags=re.IGNORECASE)
+    residual = re.sub(r"<summary>[\s\S]*?</summary>", "", residual, flags=re.IGNORECASE)
+    if len(re.sub(r"\s+", "", residual)) > 20:
+        return ""
+    summary = m.group(1).strip()
+    if not summary:
+        return ""
+    pending_re = r"(继续|接着|随后|下一步|将|准备|开始|轮询|查询|提交|生成|审查|复审|下载|合成|拼接|开拍|执行)"
+    done_re = r"(已完成全部|任务完成|全部完成|最终交付|无需继续|等待用户|需要用户|请用户|已交付)"
+    if re.search(pending_re, summary) and not re.search(done_re, summary):
+        return summary
+    return ""
 
 class GenericAgentHandler(BaseHandler):
     '''Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
@@ -418,12 +463,19 @@ class GenericAgentHandler(BaseHandler):
         count = args.get("count", 200)
         keyword = args.get("keyword")
         show_linenos = args.get("show_linenos", True)
+        is_skill = _is_skill_doc(path)
+        # skill 规则文件是方法论唯一真相源，必须整篇进上下文：忽略小 count，一次读全。
+        if is_skill and not keyword:
+            count = max(count, 100000)
         result = file_read(path, start=start, keyword=keyword,
                            count=count, show_linenos=show_linenos)
         if show_linenos and not result.startswith("Error:"): result = '由于设置了show_linenos，以下返回信息为：(行号|)内容 。\n' + result 
         if ' ... [TRUNCATED]' in result: result += '\n\n（某些行被截断，如需完整内容可改用 code_run 读取）'
-        maxlen = 15000 // args.get('_tool_num', 1)
-        result = smart_format(result, max_str_len=maxlen, omit_str='\n\n[omitted long content]\n\n')
+        # skill 文件绝不截断——整篇返回，绝不掐头去尾。其余文件用顺序截断 + 续读提示，
+        # 不再用 smart_format 掐头去尾（旧逻辑会把正中段整段丢掉造成规则静默缺失）。
+        if not (is_skill and not result.startswith("Error:")):
+            maxlen = 60000 // args.get('_tool_num', 1)
+            result = truncate_keep_head(result, maxlen)
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         log_memory_access(path)
         if 'memory' in path or 'skills' in path or 'sop' in path: 
@@ -471,6 +523,20 @@ class GenericAgentHandler(BaseHandler):
         if 'max_tokens !!!]' in content[-100:]:
             return self._retry_or_exit("[System] max_tokens limit reached. Use multi small steps to do it.")
         
+        pending_summary = _summary_only_pending_action(content)
+        if pending_summary:
+            ct = getattr(self, '_summary_only_pending_ct', 0) + 1
+            self._summary_only_pending_ct = ct
+            if ct <= 3:
+                yield "[Warn] Summary-only pending action without tool call. Continuing autonomously.\n"
+                return StepOutcome({}, next_prompt=(
+                    "[System] 上一轮你只输出了进度 summary，但没有调用任何工具。"
+                    f"summary={pending_summary!r}。\n"
+                    "如果任务尚未完成，必须在本轮直接调用下一步所需工具；"
+                    "不要只写计划或进度描述。只有确实完成、失败阻塞或需要用户决策时，才可以不调用工具并明确说明原因。"
+                ))
+            yield "[Warn] Repeated summary-only pending actions. Stopping to avoid an infinite loop.\n"
+
         if self._in_plan_mode() and any(kw in content for kw in ['任务完成', '全部完成', '已完成所有', '🏁']):
             if 'VERDICT' not in content and '[VERIFY]' not in content and '验证subagent' not in content:
                 yield "[Warn] Plan模式完成声明拦截。\n"
@@ -546,6 +612,7 @@ class GenericAgentHandler(BaseHandler):
         prompt = f"\n### [WORKING MEMORY]\n{earlier}<history>\n{h_str}\n</history>"
         prompt += f"\nCurrent turn: {self.current_turn}\n"
         if self.working.get('key_info'): prompt += f"\n<key_info>{self.working.get('key_info')}</key_info>"
+        prompt += "\n[Memory priority] 若 key_info/摘要 与最近 history 或项目文件冲突，以项目文件和最近结果为准，并先校准当前阶段。"
         if self.working.get('related_sop'): prompt += f"\n有不清晰的地方请再次读取{self.working.get('related_sop')}"
         if getattr(self.parent, 'verbose', False):
             try: print(prompt)
