@@ -1075,11 +1075,12 @@ class _LiveCanvasHandler(SimpleHTTPRequestHandler):
 
     def translate_path(self, path: str) -> str:
         project_dir = _LIVE_STATE.get("project_dir")
+        if project_dir:
+            self.directory = str(project_dir)
         route = urlsplit(path).path
         if route in ("", "/"):
-            route = "/canvas.html"
-        rel = route.lstrip("/")
-        return str(Path(project_dir) / rel) if project_dir else super().translate_path(path)
+            path = "/canvas.html"
+        return super().translate_path(path)
 
     def do_GET(self):
         route = urlsplit(self.path).path
