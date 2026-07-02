@@ -1,0 +1,89 @@
+<svg width="1600" height="980" viewBox="0 0 1600 980" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 34px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .subtitle { font: 400 18px "Times New Roman", "Noto Serif SC", serif; fill: #444444; }
+      .boxTitle { font: 700 22px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .boxText { font: 400 17px "Times New Roman", "Noto Serif SC", serif; fill: #333333; }
+      .note { font: 600 17px "Times New Roman", "Noto Serif SC", serif; fill: #222222; }
+      .label { font: 700 16px "Times New Roman", "Noto Serif SC", serif; fill: #ffffff; }
+      .arrow { stroke: #222222; stroke-width: 4.5; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #555555; stroke-width: 3; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrow2); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#222222"/>
+    </marker>
+    <marker id="arrow2" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#555555"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="980" fill="#ffffff"/>
+  <text x="800" y="62" text-anchor="middle" class="title">VibeFilming Framework for End-to-End Autonomous Video Creation</text>
+  <text x="800" y="94" text-anchor="middle" class="subtitle">A print-friendly submission version emphasizing controllability, feedback, and direct deliverability</text>
+
+  <rect x="90" y="170" width="220" height="110" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="200" y="215" text-anchor="middle" class="boxTitle">User Intent</text>
+  <text x="200" y="246" text-anchor="middle" class="boxText">Natural-language request</text>
+
+  <rect x="360" y="170" width="250" height="110" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="485" y="215" text-anchor="middle" class="boxTitle">Planning and Storyboarding</text>
+  <text x="485" y="246" text-anchor="middle" class="boxText">Script understanding and shot decomposition</text>
+
+  <rect x="660" y="170" width="250" height="110" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="785" y="215" text-anchor="middle" class="boxTitle">Reference Asset Construction</text>
+  <text x="785" y="246" text-anchor="middle" class="boxText">Character, prop, and scene anchors</text>
+
+  <rect x="960" y="170" width="240" height="110" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="1080" y="215" text-anchor="middle" class="boxTitle">Shot Generation</text>
+  <text x="1080" y="246" text-anchor="middle" class="boxText">Parallel or sequential execution</text>
+
+  <rect x="1250" y="170" width="250" height="110" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="1375" y="215" text-anchor="middle" class="boxTitle">Director-style Review</text>
+  <text x="1375" y="246" text-anchor="middle" class="boxText">Consistency, motion, emotion, continuity</text>
+
+  <path class="arrow" d="M310 225 L360 225"/>
+  <path class="arrow" d="M610 225 L660 225"/>
+  <path class="arrow" d="M910 225 L960 225"/>
+  <path class="arrow" d="M1200 225 L1250 225"/>
+
+  <polygon points="1200,430 1310,510 1200,590 1090,510" fill="#ffffff" stroke="#111111" stroke-width="2.5"/>
+  <text x="1200" y="500" text-anchor="middle" class="boxTitle">Pass review?</text>
+  <text x="1328" y="505" class="note">Yes</text>
+  <text x="1030" y="505" class="note">No</text>
+
+  <path class="arrow" d="M1375 280 L1375 350 L1200 350 L1200 425"/>
+
+  <rect x="1120" y="650" width="320" height="100" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="1280" y="694" text-anchor="middle" class="boxTitle">Post-production and Delivery</text>
+  <text x="1280" y="724" text-anchor="middle" class="boxText">Composition, BGM generation, final export</text>
+
+  <path class="arrow" d="M1200 590 L1200 700 L1120 700"/>
+
+  <rect x="330" y="430" width="420" height="160" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <rect x="350" y="450" width="155" height="34" rx="6" ry="6" fill="#111111"/>
+  <text x="428" y="473" text-anchor="middle" class="label">Targeted Rework</text>
+  <text x="540" y="505" text-anchor="middle" class="boxText">Problem diagnosis is converted into revised instructions.</text>
+  <text x="540" y="536" text-anchor="middle" class="boxText">Only the problematic shot is regenerated or edited,</text>
+  <text x="540" y="567" text-anchor="middle" class="boxText">instead of restarting the whole workflow manually.</text>
+
+  <path class="dash" d="M1090 510 L750 510"/>
+  <path class="dash" d="M540 430 C540 350 780 350 980 350 L980 280"/>
+
+  <rect x="90" y="690" width="270" height="150" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="225" y="735" text-anchor="middle" class="boxTitle">Advantage 1</text>
+  <text x="225" y="770" text-anchor="middle" class="boxText">Low interaction barrier</text>
+  <text x="225" y="801" text-anchor="middle" class="boxText">No manual prompt engineering required</text>
+
+  <rect x="405" y="690" width="270" height="150" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="540" y="735" text-anchor="middle" class="boxTitle">Advantage 2</text>
+  <text x="540" y="770" text-anchor="middle" class="boxText">Closed quality loop</text>
+  <text x="540" y="801" text-anchor="middle" class="boxText">Generation, review, and corrective feedback</text>
+
+  <rect x="720" y="690" width="270" height="150" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="855" y="735" text-anchor="middle" class="boxTitle">Advantage 3</text>
+  <text x="855" y="770" text-anchor="middle" class="boxText">Direct deliverability</text>
+  <text x="855" y="801" text-anchor="middle" class="boxText">Output is a finished short video</text>
+
+  <text x="800" y="930" text-anchor="middle" class="subtitle">Figure 5. Submission-friendly overview of the VibeFilming pipeline.</text>
+</svg>

@@ -1,0 +1,105 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 34px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .subtitle { font: 500 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #486581; }
+      .box-title { font: 700 22px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .box-text { font: 500 17px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #334e68; }
+      .small { font: 600 16px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #486581; }
+      .badge { font: 700 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #0b7285; }
+      .arrow { stroke: #2f6bff; stroke-width: 5; fill: none; marker-end: url(#arrowHead); }
+      .loop { stroke: #7c4dff; stroke-width: 5; fill: none; marker-end: url(#arrowHeadPurple); }
+    </style>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#7b8794" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrowHead" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#2f6bff"/>
+    </marker>
+    <marker id="arrowHeadPurple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#7c4dff"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="#f8fbff"/>
+  <text x="800" y="62" text-anchor="middle" class="title">VibeFilming 总体自主创作闭环</text>
+  <text x="800" y="96" text-anchor="middle" class="subtitle">从自然语言需求到最终成片的端到端自动化流程</text>
+
+  <rect x="60" y="180" rx="24" ry="24" width="210" height="120" fill="#e7f0ff" stroke="#9cc0ff" stroke-width="2" filter="url(#shadow)"/>
+  <text x="165" y="225" text-anchor="middle" class="box-title">1. 用户需求输入</text>
+  <text x="165" y="258" text-anchor="middle" class="box-text">自然语言描述目标</text>
+  <text x="165" y="284" text-anchor="middle" class="box-text">无需 Prompt 工程</text>
+
+  <rect x="330" y="180" rx="24" ry="24" width="230" height="120" fill="#eefaf6" stroke="#8dd9bc" stroke-width="2" filter="url(#shadow)"/>
+  <text x="445" y="225" text-anchor="middle" class="box-title">2. 编导规划</text>
+  <text x="445" y="258" text-anchor="middle" class="box-text">脚本理解、分镜拆解</text>
+  <text x="445" y="284" text-anchor="middle" class="box-text">镜头节拍与信息保留</text>
+
+  <rect x="620" y="180" rx="24" ry="24" width="250" height="120" fill="#fff8e8" stroke="#f2c66d" stroke-width="2" filter="url(#shadow)"/>
+  <text x="745" y="225" text-anchor="middle" class="box-title">3. 基准素材构建</text>
+  <text x="745" y="258" text-anchor="middle" class="box-text">角色 / 场景 / 道具参考图</text>
+  <text x="745" y="284" text-anchor="middle" class="box-text">为一致性提供视觉锚点</text>
+
+  <rect x="930" y="180" rx="24" ry="24" width="240" height="120" fill="#f4edff" stroke="#c4a7ff" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1050" y="225" text-anchor="middle" class="box-title">4. 分镜生成执行</text>
+  <text x="1050" y="258" text-anchor="middle" class="box-text">按镜头出图、出视频</text>
+  <text x="1050" y="284" text-anchor="middle" class="box-text">串行或并行动态调度</text>
+
+  <path class="arrow" d="M270 240 L330 240"/>
+  <path class="arrow" d="M560 240 L620 240"/>
+  <path class="arrow" d="M870 240 L930 240"/>
+
+  <rect x="1220" y="160" rx="28" ry="28" width="290" height="160" fill="#fff1f0" stroke="#ffaaa5" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="1365" y="212" text-anchor="middle" class="box-title">5. 导演式 AI 审片</text>
+  <text x="1365" y="248" text-anchor="middle" class="box-text">检查角色一致性、动作自然度</text>
+  <text x="1365" y="276" text-anchor="middle" class="box-text">镜头衔接、情绪表达与目标匹配</text>
+
+  <path class="arrow" d="M1170 240 L1220 240"/>
+
+  <polygon points="1370,390 1470,470 1370,550 1270,470" fill="#ffffff" stroke="#2d3748" stroke-width="3" filter="url(#shadow)"/>
+  <text x="1370" y="455" text-anchor="middle" class="box-title">是否通过</text>
+  <text x="1370" y="485" text-anchor="middle" class="box-title">审片？</text>
+
+  <path class="arrow" d="M1365 320 L1365 385"/>
+
+  <rect x="1200" y="635" rx="24" ry="24" width="340" height="120" fill="#edf7ff" stroke="#7db6ff" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1370" y="678" text-anchor="middle" class="box-title">6. 合成与后期</text>
+  <text x="1370" y="710" text-anchor="middle" class="box-text">拼接镜头、统一节奏、生成 BGM</text>
+  <text x="1370" y="736" text-anchor="middle" class="box-text">形成可直接交付的完整短片</text>
+
+  <rect x="1200" y="790" rx="24" ry="24" width="340" height="72" fill="#dff7e8" stroke="#69c48d" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1370" y="835" text-anchor="middle" class="box-title">7. 输出最终成片 `final.mp4`</text>
+
+  <path class="arrow" d="M1370 550 L1370 635"/>
+  <path class="arrow" d="M1370 755 L1370 790"/>
+  <text x="1485" y="452" class="badge">是</text>
+
+  <rect x="270" y="420" rx="28" ry="28" width="420" height="120" fill="#f3f0ff" stroke="#b197fc" stroke-width="2" filter="url(#shadow)"/>
+  <text x="480" y="463" text-anchor="middle" class="box-title">定向返工与重生成</text>
+  <text x="480" y="495" text-anchor="middle" class="box-text">根据审片诊断自动修改指令、重拍问题镜头</text>
+  <text x="480" y="521" text-anchor="middle" class="box-text">避免人工逐轮试错与整体推倒重来</text>
+
+  <path class="loop" d="M1270 470 C1110 470 980 470 690 470"/>
+  <path class="loop" d="M480 420 C480 350 760 350 1060 350 L1060 300"/>
+  <text x="1165" y="445" class="badge">否</text>
+
+  <rect x="90" y="620" rx="24" ry="24" width="270" height="150" fill="#ffffff" stroke="#d9e2ec" stroke-width="2"/>
+  <text x="225" y="662" text-anchor="middle" class="box-title">优势 A</text>
+  <text x="225" y="696" text-anchor="middle" class="box-text">输入门槛低</text>
+  <text x="225" y="724" text-anchor="middle" class="small">用户只需描述创作意图</text>
+  <text x="225" y="748" text-anchor="middle" class="small">系统负责工程化转译</text>
+
+  <rect x="410" y="620" rx="24" ry="24" width="270" height="150" fill="#ffffff" stroke="#d9e2ec" stroke-width="2"/>
+  <text x="545" y="662" text-anchor="middle" class="box-title">优势 B</text>
+  <text x="545" y="696" text-anchor="middle" class="box-text">生成闭环完整</text>
+  <text x="545" y="724" text-anchor="middle" class="small">具备“生成-审查-返工”回路</text>
+  <text x="545" y="748" text-anchor="middle" class="small">不是一次性素材吐出</text>
+
+  <rect x="730" y="620" rx="24" ry="24" width="270" height="150" fill="#ffffff" stroke="#d9e2ec" stroke-width="2"/>
+  <text x="865" y="662" text-anchor="middle" class="box-title">优势 C</text>
+  <text x="865" y="696" text-anchor="middle" class="box-text">成片级交付</text>
+  <text x="865" y="724" text-anchor="middle" class="small">覆盖生成、拼接、配乐与输出</text>
+  <text x="865" y="748" text-anchor="middle" class="small">结果可直接用于传播或展示</text>
+
+  <text x="800" y="884" text-anchor="middle" class="subtitle">图 1  VibeFilming 从用户需求到最终成片的自主创作闭环示意</text>
+</svg>
