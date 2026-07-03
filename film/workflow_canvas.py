@@ -1070,7 +1070,36 @@ _LIVE_LOCK = threading.Lock()
 _LIVE_STATE: dict[str, Any] = {"server": None, "thread": None, "project_dir": None, "url": None, "port": None}
 
 
-class _LiveCanvasHandler(SimpleHTTPRequestHandler):
+class _ResilientHandlerMixin:
+    """吞掉客户端断连异常（浏览器关页/刷新，或 2 秒自动轮询取消了还没写完的请求）。
+
+    这类断连会让 sendall/flush 抛 BrokenPipeError/ConnectionResetError，本身无害，
+    但默认会冒泡到 socketserver 的错误处理里刷一大段 traceback，污染 CLI 输出。
+    这里在写响应体、收尾和单次请求三个写入点分别兜住，静默丢弃即可。
+    """
+
+    _CLIENT_DISCONNECT = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+    def copyfile(self, source, outputfile):
+        try:
+            super().copyfile(source, outputfile)
+        except self._CLIENT_DISCONNECT:
+            pass
+
+    def finish(self):
+        try:
+            super().finish()
+        except self._CLIENT_DISCONNECT:
+            pass
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        except self._CLIENT_DISCONNECT:
+            self.close_connection = True
+
+
+class _LiveCanvasHandler(_ResilientHandlerMixin, SimpleHTTPRequestHandler):
     """始终服务 _LIVE_STATE 当前指向的项目目录；每次请求前刷新画布。"""
 
     def translate_path(self, path: str) -> str:
@@ -1149,7 +1178,7 @@ def refresh_canvas(project_dir: Path) -> tuple[dict[str, Any], Path, Path]:
 def serve_canvas(project_dir: Path, host: str, port: int, open_browser: bool = False) -> int:
     graph, graph_path, html_path = refresh_canvas(project_dir)
 
-    class CanvasHandler(SimpleHTTPRequestHandler):
+    class CanvasHandler(_ResilientHandlerMixin, SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(project_dir), **kwargs)
 
