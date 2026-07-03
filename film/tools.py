@@ -25,8 +25,11 @@ def _wrap(tool_name: str, fn, log_keys=None):
         yield f"🎬 {tool_name}({_brief(public_args)})\n"
         try:
             result = fn(self, public_args)
-            ws.log_tool_call(_active_pid(self), tool_name, public_args,
+            pid = _active_pid(self)
+            ws.log_tool_call(pid, tool_name, public_args,
                              json.dumps(result, ensure_ascii=False, default=str))
+            if pid and tool_name != "workflow_canvas":
+                _refresh_workflow_canvas(pid)
             yield f"   ✅ {_brief(result)}\n"
             return StepOutcome(result, next_prompt="\n")
         except Exception as e:
@@ -127,6 +130,18 @@ def _redirect_llm_log(handler, pid: str):
         print(f"[WARN] LLM trace 重定向失败: {e}")
 
 
+def _refresh_workflow_canvas(pid: str):
+    """Best-effort refresh of the read-only workflow canvas after tool progress."""
+    try:
+        from . import workflow_canvas
+
+        project_dir = ws.project_dir(pid)
+        graph = workflow_canvas.build_graph(project_dir)
+        workflow_canvas.write_canvas(project_dir, graph)
+    except Exception as e:
+        print(f"[WARN] 工作流画布刷新失败: {e}")
+
+
 def _project_path(handler, *parts) -> Path:
     pid = _active_pid(handler)
     if not pid:
@@ -145,6 +160,8 @@ def _project_path(handler, *parts) -> Path:
     required=["brief"],
 )
 def _project_create(handler, args):
+    from . import workflow_canvas
+
     brief = args.get("brief", "").strip()
     if not brief:
         raise ValueError("brief 必填，描述本次想做的视频")
@@ -152,11 +169,13 @@ def _project_create(handler, args):
     budget = int(args.get("max_seedance_calls", 0))
     m = ws.project_create(brief, max_seedance_calls=budget)
     _set_active_pid(handler, m["project_id"])
+    project_dir = Path(m["project_dir"])
     return {
         "project_id": m["project_id"],
         "project_dir": m["project_dir"],
         "phases": {k: v["status"] for k, v in m["phases"].items()},
         "budget": m["budget"],
+        "canvas": workflow_canvas.canvas_launch_hint(project_dir),
     }
 
 
@@ -167,10 +186,16 @@ def _project_create(handler, args):
     required=["project_id"],
 )
 def _project_open(handler, args):
+    from . import workflow_canvas
+
     pid = args["project_id"]
     m = ws.read_manifest(pid)
     _set_active_pid(handler, pid)
-    return {"project_id": pid, "phases": m["phases"]}
+    return {
+        "project_id": pid,
+        "phases": m["phases"],
+        "canvas": workflow_canvas.canvas_launch_hint(ws.project_dir(pid)),
+    }
 
 
 @film_tool(
@@ -202,15 +227,40 @@ def _project_update_phase(handler, args):
     return {"project_id": pid, "phase": args["phase"], "state": m["phases"][args["phase"]]}
 
 
+@film_tool(
+    name="workflow_canvas",
+    desc="生成当前项目的只读工作流画布：扫描 script/director_plan/assets/storyboards/videos/reviews/composed 和日志依赖，输出 workflow_graph.json 与 canvas.html，用来看 agent 流程走到哪里。",
+    params={
+        "project_id": {"type": str, "description": "[可选] 项目 id 或项目目录路径；不传则使用当前活跃项目", "default": ""},
+    },
+)
+def _workflow_canvas(handler, args):
+    from . import workflow_canvas
+
+    target = (args.get("project_id") or _active_pid(handler) or "").strip()
+    if not target:
+        raise RuntimeError("尚无活跃项目，请先调用 project_create / project_open，或传 project_id")
+    project_dir = workflow_canvas.resolve_project(target)
+    graph = workflow_canvas.build_graph(project_dir)
+    graph_path, html_path = workflow_canvas.write_canvas(project_dir, graph)
+    return {
+        "project_id": project_dir.name,
+        "graph": str(graph_path),
+        "html": str(html_path),
+        "canvas": workflow_canvas.canvas_launch_hint(project_dir),
+        "stats": graph["stats"],
+    }
+
+
 # ============== 视觉生成 ==============
 @film_tool(
     name="gen_image",
-    desc="Seedream 图片生成统一入口：不传 reference_images 是文生图；传 reference_images 是图生图/多图融合（最多14张）。本地 path 会自动转 base64。生成包含已定角色、场景或关键道具的故事板/分镜草图/关键帧时，必须把对应终版参考图传进来，避免分镜重新脑补人物长相。watermark 默认 true（保留「AI 生成」标识）。**工具只负责落盘，不替 agent 规定文件名**：长期参考资产用 category=entity 落 entities/；镜头级素材用 category=shot 落 shots/。返回 {path, url, name}。",
+    desc="Seedream 图片生成统一入口：文生图或参考图融合（reference_images 最多14张，本地 path 自动处理）。已定角色/场景/道具参与故事板、分镜或关键帧时，传对应终版参考图。category 决定落盘：entity→entities/，shot→shots/。返回 {path, url, name}。",
     params={
         "prompt": {"type": str, "description": "图像描述"},
         "name": {"type": str, "description": "产物文件名（不含扩展名），由 agent 按项目语义自定，要求稳定、可读、可回查；不要用单视角后缀把三视图误写成单视角图。文件放哪只由 category 决定"},
         "category": {"type": "string", "enum": ["entity", "shot"], "description": "输出类别：entity=长期参考资产（角色/场景/道具，落 entities/）；shot=镜头级素材（故事板/分镜草图/关键帧，落 shots/）"},
-        "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图列表，等同火山图片生成 API 的 image 数组。生成故事板/关键帧时传本段角色、场景、关键道具参考图的本地 path；最多 14 张"},
+        "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图列表，最多 14 张；优先传本地 path"},
         "size": {"type": str, "description": "尺寸，需 ≥ 360万像素（如 2048x2048、1920x1920），过小会被图像接口拒绝", "default": "2048x2048"},
         "watermark": {"type": bool, "description": "是否加「AI 生成」水印/标识。默认 true；只有用户明确要求无标识交付图时才传 false", "default": True},
     },
@@ -336,13 +386,13 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
 
 @film_tool(
     name="gen_video_t2v",
-    desc="Seedance 2.0 视频生成（唯一入口）。异步任务立即返回 task_id（不要等！），后续用 query_video_task 轮询。只走多模态参考模式：reference_images / reference_video_url（最多 9 张图 + 1 段视频）。默认开启原生同步音轨（generate_audio=true），用于对白/环境声/必要音效；是否需要背景音乐由 prompt/audio_plan 明确决定。⛔ 开拍门槛：本 shot 出现的所有角色/关键道具/主场景，必须已用 gen_image 出好参考图并 vlm 过审；本 shot 已生成并过审的故事板/分镜草图也必须一起放进 reference_images 作为构图蓝图（**直接传 gen_image 返回的本地 path 即可，无需 url**）。",
+    desc="Seedance 2.0 视频生成（唯一入口）。提交后立即返回 task_id，用 query_video_task 轮询。支持 reference_images / reference_video_url（最多 9 图 + 1 视频）；本 shot 的过审故事板、角色、场景、关键道具参考应放进 reference_images。默认 generate_audio=true，声音意图写在 prompt/audio_plan。",
     params={
         "prompt": {"type": str, "description": "视频描述。链式段必须显式承接上段（'承接上段视频，...'）。需要锁首/尾帧画面用文字暗示：'opening frame: ...; ending frame: ...'。有对白时用 {逐字台词} 写清说话内容、说话人和音色；环境音/动作声用 <具体音效>；需要背景音乐时写清音乐情绪、强弱和对白避让，不需要时明确写无背景音乐。"},
         "name": {"type": str, "description": "产物文件名（不含扩展名）"},
         "duration": {"type": int, "description": "视频时长 4-15 秒", "minimum": 4, "maximum": 15},
         "generate_audio": {"type": bool, "description": "Seedance 2.0 原生同步音频，默认 true。用于原生对白/环境声/必要音效；是否加背景音乐由 prompt/audio_plan 决定。只有明确要全静音时才传 false", "default": True},
-        "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 参考图列表（最多 9 张）。把本 shot 的故事板/分镜草图（构图蓝图）以及角色/道具/场景参考图都放进来锁构图和一致性。**强烈建议直接传 gen_image 返回的本地 path**（短、好转抄，工具会自动 base64 内嵌）；不要转抄那条很长的带签名 url——签名 query 一旦被你截断，Seedance 服务端就会报 resource download failed"},
+        "reference_images": {"type": "array", "items": {"type": "string"}, "description": "[可选] 最多 9 张；放本 shot 的故事板、角色、场景、道具参考。优先传 gen_image 返回的本地 path，避免长签名 url 被截断"},
         "reference_video_url": {"type": str, "description": "[链式段（≥2 段视频中第 N≥2 段）必传] 上一段视频。可传 query_video_task 返回的 video_url（云端 url），也可传 path（本地 mp4 路径，工具会自动反查同名 .url.txt sidecar 取云端 url）。最多 1 段"},
         "resolution": {"type": str, "enum": ["480p", "720p", "1080p", "4k"], "description": "视频清晰度。Seedance 2.0 支持 4k；默认 720p，只有交付场景需要高规格画质时才主动选择 4k", "default": "720p"},
         "ratio": {"type": str, "enum": ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"], "description": "视频画幅比例，必须显式传入"},
@@ -442,7 +492,7 @@ _VIDEO_TASK_STARTS = {}
 
 @film_tool(
     name="query_video_task",
-    desc="查询 Seedance 任务状态。默认阻塞等到 succeeded/failed，**自动按 duration 估 ETA + 动态轮询间隔 + 打印进度条**。建议传 duration（视频时长秒数），ETA 会算成 60 + 15 * duration（10s 视频约 210s，15s 视频约 285s）。succeeded 时返回 {path?, video_url}（path: save_name 给了的话；video_url: 云端 url 可直接当下一段 reference_video_url）。同时把 url 写到 <save_name>.url.txt sidecar 方便本地 path 反查。",
+    desc="查询 Seedance 任务。默认等到 succeeded/failed；建议传 duration 估 ETA。成功后返回 {path?, video_url}，并写 <save_name>.url.txt，方便后续链式段用本地 path 反查云端 url。",
     params={
         "task_id": {"type": str, "description": "gen_video_t2v 返回的 task_id"},
         "save_name": {"type": str, "description": "[可选] succeeded 时落盘的文件名（不含扩展名）"},
@@ -566,7 +616,7 @@ def _query_video_task(handler, args):
 
 @film_tool(
     name="cancel_video_task",
-    desc="尝试取消 Seedance 任务（DELETE）。⚠️ 仅当任务处于 queued / pending 等未启动状态时可取消；一旦 status=running 则会返回 409 InvalidAction.RunningTaskDeletion——平台不支持中途打断。succeeded / 不存在也会 graceful 返回。最佳实践：用户中断后立即调一次本工具，能取消的就取消，不能取消的就只能等它跑完（已经计费）",
+    desc="尝试取消 Seedance 任务。仅 queued/pending 通常可取消；running 平台不支持打断。用户中断后可调用一次，能取消就取消，不能取消只能稍后查询结果。",
     params={"task_id": {"type": str, "description": "Seedance 任务 id"}},
     required=["task_id"],
 )
@@ -972,7 +1022,7 @@ def _extract_frames(handler, args):
 
 @film_tool(
     name="burn_subtitle",
-    desc="在视频上烧录文字字幕（drawtext，永久叠加）",
+    desc="应急文字烧录（drawtext，永久叠加）。正常影视流程不要用它补对白字幕、CTA 或编导文字；片名/人名牌/时间地点卡应在视频生成阶段画进画面。",
     params={
         "clip": str,
         "text": str,
@@ -993,13 +1043,13 @@ def _burn_subtitle(handler, args):
 
 @film_tool(
     name="vlm_understand",
-    desc="开放式视觉理解：自己写 question，Doubao Seed 2.1 pro 回答。视频走原生视频理解，图片走多图理解；本地视频超过 Ark Files API 上限时会自动生成压缩审片代理文件再上传，不需要临时写 ffmpeg。结果落到 reviews/<name>.json。**审 video 传 video，审图片传 images（二选一，至少传一个）**。审片时 question 越具体越好，可让 VLM 同时根据画面和音轨作答。",
+    desc="开放式视觉理解：视频走原生视频理解，图片走多图理解；结果落到 reviews/<name>.json。审 video 传 video，审图片传 images。影视审查只问画面、叙事、画面文字、角色、镜头语言和物理穿帮，不把音轨/人声/BGM/旁白/口型作为通过条件。",
     params={
         "video": {"type": str, "description": "[审视频时传] 单个视频路径。与 images 二选一"},
         "images": {"type": "array", "items": {"type": "string"}, "description": "[审图片时传] 一张或多张图片路径（对比/多帧审查时传多张）。与 video 二选一", "default": None},
         "question": {"type": str, "description": "你想让 VLM 回答的问题，越具体越好；审片时把要核对的点逐条写清"},
         "system": {"type": str, "description": "[可选] 系统提示，设定 VLM 角色/输出格式（如 '你是严格的影视审片导演，只输出 JSON'）"},
-        "max_tokens": {"type": int, "default": 4096},
+        "max_tokens": {"type": int, "default": 16384},
         "temperature": {"type": float, "default": 0.1},
         "name": {"type": str, "description": "归档文件名（不含扩展名），由 agent 按审查对象自定，要求稳定、可读、可回查；建议包含 review、对象类型/对象名、阶段或版本。不要用固定模板强塞单视角名，除非被审对象本身确实是单独视角图", "default": "understand"},
     },
@@ -1034,7 +1084,7 @@ def _vlm_understand(handler, args):
         is_video = True
         resp_data = sdk.doubao_video_understand(
             video, question,
-            max_tokens=int(args.get("max_tokens", 4096)),
+            max_tokens=int(args.get("max_tokens", 16384)),
             temperature=float(args.get("temperature", 0.1)),
             system=system,
         )
@@ -1044,7 +1094,7 @@ def _vlm_understand(handler, args):
         is_video = False
         resp_data = sdk.doubao_vlm(
             imgs, question,
-            max_tokens=int(args.get("max_tokens", 4096)),
+            max_tokens=int(args.get("max_tokens", 16384)),
             temperature=float(args.get("temperature", 0.1)),
             system=system,
         )
@@ -1082,7 +1132,7 @@ def _vlm_understand(handler, args):
         "images": images,
         "question": question,
         "answer": answer,
-        "max_tokens": int(args.get("max_tokens", 4096)),
+        "max_tokens": int(args.get("max_tokens", 16384)),
         "temperature": float(args.get("temperature", 0.1)),
     }, raw_request=payload, raw_response=raw)
 

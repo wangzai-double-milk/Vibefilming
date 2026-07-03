@@ -1,0 +1,63 @@
+<svg width="1700" height="980" viewBox="0 0 1700 980" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 34px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .subtitle { font: 400 18px "Times New Roman", "Noto Serif SC", serif; fill: #444444; }
+      .head { font: 700 25px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .th { font: 700 20px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .td { font: 400 18px "Times New Roman", "Noto Serif SC", serif; fill: #333333; }
+      .good { font: 700 18px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+    </style>
+  </defs>
+
+  <rect width="1700" height="980" fill="#ffffff"/>
+  <text x="850" y="64" text-anchor="middle" class="title">Comparison Between Conventional Video Generation and VibeFilming</text>
+  <text x="850" y="96" text-anchor="middle" class="subtitle">A submission-style comparison figure suitable for motivation, methodology, or discussion sections</text>
+
+  <rect x="90" y="150" width="1520" height="720" fill="#ffffff" stroke="#111111" stroke-width="2.5"/>
+
+  <line x1="90" y1="240" x2="1610" y2="240" stroke="#111111" stroke-width="2"/>
+  <line x1="410" y1="150" x2="410" y2="870" stroke="#111111" stroke-width="2"/>
+  <line x1="980" y1="150" x2="980" y2="870" stroke="#111111" stroke-width="2"/>
+
+  <text x="250" y="205" text-anchor="middle" class="head">Comparison Dimension</text>
+  <text x="695" y="205" text-anchor="middle" class="head">Conventional Pipeline</text>
+  <text x="1295" y="205" text-anchor="middle" class="head">VibeFilming</text>
+
+  <line x1="90" y1="330" x2="1610" y2="330" stroke="#111111" stroke-width="1.8"/>
+  <line x1="90" y1="420" x2="1610" y2="420" stroke="#111111" stroke-width="1.8"/>
+  <line x1="90" y1="510" x2="1610" y2="510" stroke="#111111" stroke-width="1.8"/>
+  <line x1="90" y1="600" x2="1610" y2="600" stroke="#111111" stroke-width="1.8"/>
+  <line x1="90" y1="690" x2="1610" y2="690" stroke="#111111" stroke-width="1.8"/>
+  <line x1="90" y1="780" x2="1610" y2="780" stroke="#111111" stroke-width="1.8"/>
+
+  <text x="250" y="292" text-anchor="middle" class="th">User interaction</text>
+  <text x="695" y="292" text-anchor="middle" class="td">Manual prompt crafting and repeated parameter tuning</text>
+  <text x="1295" y="292" text-anchor="middle" class="td">Natural-language goal specification with agent-level translation</text>
+
+  <text x="250" y="382" text-anchor="middle" class="th">Execution mode</text>
+  <text x="695" y="382" text-anchor="middle" class="td">Often single-step or loosely connected generation</text>
+  <text x="1295" y="382" text-anchor="middle" class="td">End-to-end workflow with planning, generation, review, and delivery</text>
+
+  <text x="250" y="472" text-anchor="middle" class="th">Quality control</text>
+  <text x="695" y="472" text-anchor="middle" class="td">Mostly post-hoc human inspection</text>
+  <text x="1295" y="472" text-anchor="middle" class="td">Director-style review embedded inside the generation loop</text>
+
+  <text x="250" y="562" text-anchor="middle" class="th">Error handling</text>
+  <text x="695" y="562" text-anchor="middle" class="td">Blind retries and global restart are common</text>
+  <text x="1295" y="562" text-anchor="middle" class="td">Targeted rework based on explicit problem diagnosis</text>
+
+  <text x="250" y="652" text-anchor="middle" class="th">Scalability</text>
+  <text x="695" y="652" text-anchor="middle" class="td">Workflow knowledge is often hard-coded</text>
+  <text x="1295" y="652" text-anchor="middle" class="td">Decision logic is decoupled from skill-level knowledge</text>
+
+  <text x="250" y="742" text-anchor="middle" class="th">Scheduling strategy</text>
+  <text x="695" y="742" text-anchor="middle" class="td">Frequently fixed or fully manual</text>
+  <text x="1295" y="742" text-anchor="middle" class="td">Adaptive parallel or sequential scheduling by shot dependency</text>
+
+  <text x="250" y="832" text-anchor="middle" class="th">Output form</text>
+  <text x="695" y="832" text-anchor="middle" class="td">Intermediate clips that still require manual editing</text>
+  <text x="1295" y="832" text-anchor="middle" class="td">Composed final video ready for direct delivery</text>
+
+  <text x="850" y="936" text-anchor="middle" class="subtitle">Figure 7. Comparative analysis showing how VibeFilming differs from conventional video generation pipelines.</text>
+</svg>

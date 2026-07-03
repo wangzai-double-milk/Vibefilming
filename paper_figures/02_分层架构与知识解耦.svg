@@ -1,0 +1,99 @@
+<svg width="1600" height="980" viewBox="0 0 1600 980" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 34px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .subtitle { font: 500 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #486581; }
+      .layer-title { font: 700 26px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .layer-text { font: 500 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #334e68; }
+      .card-title { font: 700 21px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .card-text { font: 500 17px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #486581; }
+      .tag { font: 700 17px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #0f5132; }
+      .note { font: 600 16px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #7c2d12; }
+      .arrowBlue { stroke: #2f6bff; stroke-width: 5; fill: none; marker-end: url(#arrowBlue); }
+      .arrowGreen { stroke: #16a34a; stroke-width: 4.5; fill: none; marker-end: url(#arrowGreen); }
+      .arrowPurple { stroke: #7c3aed; stroke-width: 4.5; fill: none; marker-end: url(#arrowPurple); }
+    </style>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#7b8794" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#2f6bff"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#16a34a"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="980" fill="#fbfdff"/>
+  <text x="800" y="60" text-anchor="middle" class="title">VibeFilming 分层架构与知识解耦机制</text>
+  <text x="800" y="94" text-anchor="middle" class="subtitle">体现“决策内核负责判断，技能与工具负责经验和执行”的设计理念</text>
+
+  <rect x="120" y="150" rx="28" ry="28" width="980" height="110" fill="#eaf2ff" stroke="#a9c5ff" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="180" y="214" class="layer-title">用户交互层</text>
+  <text x="460" y="214" class="layer-text">自然语言任务输入、修改意见输入、结果确认</text>
+  <text x="460" y="242" class="card-text">特点：使用者表达创作目标，而不是手工编排底层工具</text>
+
+  <rect x="120" y="300" rx="30" ry="30" width="980" height="180" fill="#eefaf6" stroke="#93ddc0" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="180" y="352" class="layer-title">自主决策内核</text>
+  <text x="180" y="392" class="layer-text">负责：下一步行动判断、流程循环控制、审片反馈处理、返工决策、预算与状态管理</text>
+  <text x="180" y="425" class="card-text">代码支撑：主循环、工具分发、动态路由、任务中断与恢复、自动化触发</text>
+  <rect x="760" y="335" rx="20" ry="20" width="300" height="105" fill="#ffffff" stroke="#b7e4d2" stroke-width="2"/>
+  <text x="910" y="374" text-anchor="middle" class="card-title">核心职责</text>
+  <text x="910" y="403" text-anchor="middle" class="card-text">“判断做什么”</text>
+  <text x="910" y="430" text-anchor="middle" class="card-text">而非“把做法写死”</text>
+
+  <rect x="120" y="520" rx="30" ry="30" width="980" height="210" fill="#fff8e8" stroke="#f3c66f" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="180" y="575" class="layer-title">技能知识层</text>
+  <text x="180" y="612" class="layer-text">以 `SKILL.md` 形式沉淀影视制作经验、指令工程经验、审片策略与拍法规范</text>
+  <text x="180" y="645" class="card-text">作用：把“怎么做得更好”的领域知识从内核代码中剥离出来，形成可维护、可扩展的外部知识层</text>
+  <rect x="180" y="665" rx="18" ry="18" width="250" height="42" fill="#fff2cc" stroke="#f4b942" stroke-width="1.5"/>
+  <text x="305" y="692" text-anchor="middle" class="tag">影视主流程技能</text>
+  <rect x="450" y="665" rx="18" ry="18" width="250" height="42" fill="#fff2cc" stroke="#f4b942" stroke-width="1.5"/>
+  <text x="575" y="692" text-anchor="middle" class="tag">Prompt 工程技能</text>
+  <rect x="720" y="665" rx="18" ry="18" width="250" height="42" fill="#fff2cc" stroke="#f4b942" stroke-width="1.5"/>
+  <text x="845" y="692" text-anchor="middle" class="tag">审片与复盘技能</text>
+
+  <rect x="120" y="770" rx="30" ry="30" width="980" height="120" fill="#f4edff" stroke="#cdb3ff" stroke-width="2.5" filter="url(#shadow)"/>
+  <text x="180" y="840" class="layer-title">工具执行层</text>
+  <text x="470" y="840" class="layer-text">图像生成、视频生成、视频编辑、审片理解、文件操作、网页交互等能力模块</text>
+
+  <rect x="1180" y="190" rx="30" ry="30" width="300" height="180" fill="#ffffff" stroke="#d9e2ec" stroke-width="2.2" filter="url(#shadow)"/>
+  <text x="1330" y="236" text-anchor="middle" class="card-title">优势 1</text>
+  <text x="1330" y="272" text-anchor="middle" class="card-title">决策 / 知识解耦</text>
+  <text x="1330" y="305" text-anchor="middle" class="card-text">内核保持稳定</text>
+  <text x="1330" y="332" text-anchor="middle" class="card-text">经验持续外置沉淀</text>
+
+  <rect x="1180" y="410" rx="30" ry="30" width="300" height="180" fill="#ffffff" stroke="#d9e2ec" stroke-width="2.2" filter="url(#shadow)"/>
+  <text x="1330" y="456" text-anchor="middle" class="card-title">优势 2</text>
+  <text x="1330" y="492" text-anchor="middle" class="card-title">低代码扩展</text>
+  <text x="1330" y="525" text-anchor="middle" class="card-text">新增拍法或规则时</text>
+  <text x="1330" y="552" text-anchor="middle" class="card-text">优先改文档而非改内核</text>
+
+  <rect x="1180" y="630" rx="30" ry="30" width="300" height="180" fill="#ffffff" stroke="#d9e2ec" stroke-width="2.2" filter="url(#shadow)"/>
+  <text x="1330" y="676" text-anchor="middle" class="card-title">优势 3</text>
+  <text x="1330" y="712" text-anchor="middle" class="card-title">持续进化能力</text>
+  <text x="1330" y="745" text-anchor="middle" class="card-text">真实执行经验可回写</text>
+  <text x="1330" y="772" text-anchor="middle" class="card-text">形成下一轮先验知识</text>
+
+  <rect x="1180" y="840" rx="24" ry="24" width="300" height="70" fill="#ffe9e7" stroke="#ffb4a8" stroke-width="2"/>
+  <text x="1330" y="883" text-anchor="middle" class="note">论文可强调：开放式 Agent 架构而非静态工作流</text>
+
+  <path class="arrowBlue" d="M610 260 L610 300"/>
+  <path class="arrowBlue" d="M610 480 L610 520"/>
+  <path class="arrowBlue" d="M610 730 L610 770"/>
+
+  <path class="arrowGreen" d="M1100 390 C1160 390 1160 280 1180 280"/>
+  <path class="arrowGreen" d="M1100 620 C1160 620 1160 500 1180 500"/>
+  <path class="arrowGreen" d="M1100 830 C1160 830 1160 720 1180 720"/>
+
+  <path class="arrowPurple" d="M960 730 C1030 730 1040 690 1040 640 C1040 575 1000 560 930 560"/>
+  <text x="1000" y="602" class="card-text" fill="#7c3aed">经验回流</text>
+
+  <path class="arrowPurple" d="M960 890 C1090 890 1090 350 1010 350"/>
+  <text x="1080" y="620" class="card-text" fill="#7c3aed">执行反馈反哺决策</text>
+
+  <text x="800" y="956" text-anchor="middle" class="subtitle">图 2  VibeFilming 的分层架构示意：内核负责决策，技能文档承载知识，工具层负责具体执行</text>
+</svg>

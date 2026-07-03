@@ -1,0 +1,59 @@
+<svg width="1600" height="980" viewBox="0 0 1600 980" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 34px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .subtitle { font: 400 18px "Times New Roman", "Noto Serif SC", serif; fill: #444444; }
+      .main { font: 700 28px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .cardTitle { font: 700 22px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .cardText { font: 400 17px "Times New Roman", "Noto Serif SC", serif; fill: #333333; }
+      .num { font: 700 34px "Times New Roman", serif; fill: #ffffff; }
+      .tag { font: 700 18px "Times New Roman", "Noto Serif SC", serif; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="980" fill="#ffffff"/>
+  <text x="800" y="64" text-anchor="middle" class="title">Key Contributions of VibeFilming</text>
+  <text x="800" y="96" text-anchor="middle" class="subtitle">A concise figure suitable for introduction, abstract page, or method contribution summary</text>
+
+  <circle cx="800" cy="455" r="150" fill="#111111"/>
+  <text x="800" y="430" text-anchor="middle" class="main" fill="#ffffff">Autonomous</text>
+  <text x="800" y="470" text-anchor="middle" class="main" fill="#ffffff">Director Agent</text>
+  <text x="800" y="508" text-anchor="middle" class="cardText" fill="#ffffff">From user intent to final video</text>
+
+  <line x1="800" y1="305" x2="800" y2="185" stroke="#111111" stroke-width="3"/>
+  <line x1="655" y1="510" x2="470" y2="620" stroke="#111111" stroke-width="3"/>
+  <line x1="945" y1="510" x2="1130" y2="620" stroke="#111111" stroke-width="3"/>
+  <line x1="800" y1="605" x2="800" y2="780" stroke="#111111" stroke-width="3"/>
+
+  <rect x="620" y="120" width="360" height="150" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <rect x="645" y="145" width="46" height="46" rx="6" ry="6" fill="#111111"/>
+  <text x="668" y="178" text-anchor="middle" class="num">1</text>
+  <text x="815" y="174" text-anchor="middle" class="cardTitle">Natural-language-first interaction</text>
+  <text x="800" y="210" text-anchor="middle" class="cardText">Users describe creative intent in plain language rather than crafting</text>
+  <text x="800" y="238" text-anchor="middle" class="cardText">low-level prompts or manually operating multi-stage generation tools.</text>
+
+  <rect x="170" y="565" width="420" height="170" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <rect x="195" y="590" width="46" height="46" rx="6" ry="6" fill="#111111"/>
+  <text x="218" y="623" text-anchor="middle" class="num">2</text>
+  <text x="380" y="618" text-anchor="middle" class="cardTitle">Closed-loop quality control</text>
+  <text x="380" y="654" text-anchor="middle" class="cardText">The system integrates generation, director-style review,</text>
+  <text x="380" y="682" text-anchor="middle" class="cardText">and targeted rework into a self-corrective loop.</text>
+  <text x="380" y="710" text-anchor="middle" class="cardText">This reduces blind trial-and-error and improves output stability.</text>
+
+  <rect x="1010" y="565" width="420" height="170" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <rect x="1035" y="590" width="46" height="46" rx="6" ry="6" fill="#111111"/>
+  <text x="1058" y="623" text-anchor="middle" class="num">3</text>
+  <text x="1220" y="618" text-anchor="middle" class="cardTitle">Decoupled architecture</text>
+  <text x="1220" y="654" text-anchor="middle" class="cardText">Decision logic is separated from domain knowledge.</text>
+  <text x="1220" y="682" text-anchor="middle" class="cardText">Skills externalize filmmaking know-how, improving extensibility,</text>
+  <text x="1220" y="710" text-anchor="middle" class="cardText">maintainability, and rapid adaptation.</text>
+
+  <rect x="590" y="780" width="420" height="150" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <rect x="615" y="805" width="46" height="46" rx="6" ry="6" fill="#111111"/>
+  <text x="638" y="838" text-anchor="middle" class="num">4</text>
+  <text x="800" y="833" text-anchor="middle" class="cardTitle">Adaptive scheduling and direct delivery</text>
+  <text x="800" y="869" text-anchor="middle" class="cardText">The agent dynamically balances parallel efficiency and narrative continuity,</text>
+  <text x="800" y="897" text-anchor="middle" class="cardText">finally delivering a composed video instead of isolated raw clips.</text>
+
+  <text x="800" y="952" text-anchor="middle" class="subtitle">Figure 6. A contribution summary figure highlighting the main research value of VibeFilming.</text>
+</svg>

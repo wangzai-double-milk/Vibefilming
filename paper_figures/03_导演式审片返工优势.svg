@@ -1,0 +1,121 @@
+<svg width="1700" height="940" viewBox="0 0 1700 940" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 34px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .subtitle { font: 500 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #486581; }
+      .section { font: 700 26px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .box-title { font: 700 21px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #102a43; }
+      .box-text { font: 500 17px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #334e68; }
+      .label { font: 700 17px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #ffffff; }
+      .good { font: 700 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #137333; }
+      .bad { font: 700 18px "PingFang SC", "Microsoft YaHei", sans-serif; fill: #b42318; }
+      .arrowRed { stroke: #e85d75; stroke-width: 5; fill: none; marker-end: url(#arrowRed); }
+      .arrowBlue { stroke: #2f6bff; stroke-width: 5; fill: none; marker-end: url(#arrowBlue); }
+      .arrowGreen { stroke: #16a34a; stroke-width: 5; fill: none; marker-end: url(#arrowGreen); }
+      .loop { stroke: #7c3aed; stroke-width: 5; fill: none; marker-end: url(#arrowPurple); }
+    </style>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#7b8794" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrowRed" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#e85d75"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#2f6bff"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#16a34a"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <rect width="1700" height="940" fill="#fbfdff"/>
+  <text x="850" y="58" text-anchor="middle" class="title">导演式审片与定向返工优势</text>
+  <text x="850" y="92" text-anchor="middle" class="subtitle">对比“一次性生成”与“生成-审片-返工闭环”的质量控制能力差异</text>
+
+  <rect x="70" y="130" rx="26" ry="26" width="690" height="670" fill="#fff5f5" stroke="#ffb3b3" stroke-width="2.5" filter="url(#shadow)"/>
+  <rect x="92" y="150" rx="18" ry="18" width="180" height="42" fill="#e85d75"/>
+  <text x="182" y="178" text-anchor="middle" class="label">传统一次性生成</text>
+  <text x="415" y="190" text-anchor="middle" class="section">生成后主要依赖人工筛选与重试</text>
+
+  <rect x="130" y="250" rx="22" ry="22" width="220" height="95" fill="#ffffff" stroke="#ffc3c3" stroke-width="2"/>
+  <text x="240" y="289" text-anchor="middle" class="box-title">输入 Prompt</text>
+  <text x="240" y="317" text-anchor="middle" class="box-text">用户手工描述镜头</text>
+
+  <rect x="410" y="250" rx="22" ry="22" width="220" height="95" fill="#ffffff" stroke="#ffc3c3" stroke-width="2"/>
+  <text x="520" y="289" text-anchor="middle" class="box-title">模型直接生成</text>
+  <text x="520" y="317" text-anchor="middle" class="box-text">输出单张图或单段视频</text>
+
+  <polygon points="520,400 620,480 520,560 420,480" fill="#ffffff" stroke="#e85d75" stroke-width="3"/>
+  <text x="520" y="466" text-anchor="middle" class="box-title">效果是否</text>
+  <text x="520" y="494" text-anchor="middle" class="box-title">令人满意？</text>
+
+  <rect x="390" y="620" rx="22" ry="22" width="260" height="95" fill="#ffffff" stroke="#ffc3c3" stroke-width="2"/>
+  <text x="520" y="659" text-anchor="middle" class="box-title">人工重写 Prompt</text>
+  <text x="520" y="687" text-anchor="middle" class="box-text">用户自行猜测失败原因</text>
+
+  <text x="150" y="640" class="bad">问题特征</text>
+  <text x="150" y="678" class="box-text">1. 失败原因不透明</text>
+  <text x="150" y="708" class="box-text">2. 需要人工多轮试错</text>
+  <text x="150" y="738" class="box-text">3. 局部问题常导致整体重做</text>
+
+  <path class="arrowRed" d="M350 297 L410 297"/>
+  <path class="arrowRed" d="M520 345 L520 395"/>
+  <path class="arrowRed" d="M520 560 L520 620"/>
+  <path class="arrowRed" d="M390 668 C250 668 220 520 240 345"/>
+  <text x="270" y="602" class="bad">不满意</text>
+  <text x="635" y="468" class="good">满意</text>
+
+  <rect x="900" y="130" rx="26" ry="26" width="730" height="670" fill="#effaf4" stroke="#99dfb4" stroke-width="2.5" filter="url(#shadow)"/>
+  <rect x="922" y="150" rx="18" ry="18" width="220" height="42" fill="#16a34a"/>
+  <text x="1032" y="178" text-anchor="middle" class="label">VibeFilming 闭环生成</text>
+  <text x="1265" y="190" text-anchor="middle" class="section">在生成链路中嵌入导演式审片与定向返工</text>
+
+  <rect x="955" y="240" rx="22" ry="22" width="230" height="95" fill="#ffffff" stroke="#b7e4c7" stroke-width="2"/>
+  <text x="1070" y="279" text-anchor="middle" class="box-title">自然语言需求</text>
+  <text x="1070" y="307" text-anchor="middle" class="box-text">系统自动完成工程化转译</text>
+
+  <rect x="1240" y="240" rx="22" ry="22" width="230" height="95" fill="#ffffff" stroke="#b7e4c7" stroke-width="2"/>
+  <text x="1355" y="279" text-anchor="middle" class="box-title">生成镜头产物</text>
+  <text x="1355" y="307" text-anchor="middle" class="box-text">图像 / 视频 / 中间成片</text>
+
+  <rect x="1110" y="395" rx="22" ry="22" width="300" height="105" fill="#ffffff" stroke="#b7e4c7" stroke-width="2"/>
+  <text x="1260" y="436" text-anchor="middle" class="box-title">导演式 AI 审片</text>
+  <text x="1260" y="464" text-anchor="middle" class="box-text">识别一致性、动作、情绪、衔接问题</text>
+
+  <polygon points="1260,550 1360,630 1260,710 1160,630" fill="#ffffff" stroke="#16a34a" stroke-width="3"/>
+  <text x="1260" y="617" text-anchor="middle" class="box-title">是否通过</text>
+  <text x="1260" y="645" text-anchor="middle" class="box-title">质量门槛？</text>
+
+  <rect x="940" y="595" rx="22" ry="22" width="180" height="85" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="2"/>
+  <text x="1030" y="631" text-anchor="middle" class="box-title">问题诊断</text>
+  <text x="1030" y="657" text-anchor="middle" class="box-text">明确失败原因</text>
+
+  <rect x="940" y="705" rx="22" ry="22" width="180" height="85" fill="#f5f3ff" stroke="#c4b5fd" stroke-width="2"/>
+  <text x="1030" y="741" text-anchor="middle" class="box-title">定向返工</text>
+  <text x="1030" y="767" text-anchor="middle" class="box-text">只重做问题镜头</text>
+
+  <rect x="1440" y="595" rx="22" ry="22" width="150" height="120" fill="#ffffff" stroke="#b7e4c7" stroke-width="2"/>
+  <text x="1515" y="642" text-anchor="middle" class="box-title">进入合成</text>
+  <text x="1515" y="672" text-anchor="middle" class="box-text">保留通过结果</text>
+
+  <text x="1460" y="760" class="good">优势特征</text>
+  <text x="1460" y="792" class="box-text">1. 失败原因可解释</text>
+  <text x="1460" y="820" class="box-text">2. 返工粒度更细</text>
+  <text x="1460" y="848" class="box-text">3. 质量控制前置化</text>
+
+  <path class="arrowBlue" d="M1185 287 L1240 287"/>
+  <path class="arrowBlue" d="M1355 335 L1355 365 C1355 390 1320 390 1260 390"/>
+  <path class="arrowBlue" d="M1260 500 L1260 545"/>
+  <path class="arrowGreen" d="M1360 630 L1440 630"/>
+  <text x="1395" y="608" class="good">通过</text>
+  <path class="loop" d="M1160 630 L1120 630"/>
+  <path class="loop" d="M1030 680 L1030 705"/>
+  <path class="loop" d="M1030 705 C1030 515 1110 515 1240 335"/>
+  <text x="1090" y="606" class="box-text" fill="#7c3aed">未通过</text>
+
+  <rect x="170" y="832" rx="20" ry="20" width="1360" height="68" fill="#ffffff" stroke="#d9e2ec" stroke-width="2"/>
+  <text x="850" y="875" text-anchor="middle" class="subtitle">图 3  导演式审片使系统具备“发现问题-解释问题-定向返工”的闭环能力，从而降低人工试错成本并提升成片稳定性</text>
+</svg>

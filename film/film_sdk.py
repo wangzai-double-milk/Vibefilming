@@ -205,7 +205,7 @@ def _img_to_url(ref: str) -> str:
 
 
 # ============== Doubao 文本 / VLM ==============
-def doubao_chat(messages: list, max_tokens: int = 4096, temperature: float = 0.7,
+def doubao_chat(messages: list, max_tokens: int = 16384, temperature: float = 0.7,
                 model: str = None) -> dict:
     """Doubao 文本对话。messages 遵循 OpenAI 格式。返回完整 API JSON。"""
     body = {
@@ -217,7 +217,7 @@ def doubao_chat(messages: list, max_tokens: int = 4096, temperature: float = 0.7
     return _http_post(f"{get_ark_base()}/chat/completions", body)
 
 
-def doubao_vlm(image_paths: list, text: str, max_tokens: int = 4096,
+def doubao_vlm(image_paths: list, text: str, max_tokens: int = 16384,
                temperature: float = 0.1, system: Optional[str] = None) -> dict:
     """Doubao VLM。image_paths 是本地图片路径或 URL，会归一成模型可读 image_url。
     system: 可选系统提示（设定 VLM 的角色/输出格式）。"""
@@ -521,7 +521,7 @@ def prepare_video_for_vlm(video: str, *, force: bool = False,
     )
 
 
-def doubao_video_understand(video: str, text: str, max_tokens: int = 4096,
+def doubao_video_understand(video: str, text: str, max_tokens: int = 16384,
                             temperature: float = 0.1, fps: float = 1.0,
                             system: Optional[str] = None) -> dict:
     """Doubao Seed 2.0 pro 直接理解视频（不抽帧）。

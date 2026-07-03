@@ -1,0 +1,60 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .title { font: 700 36px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .text { font: 400 18px "Times New Roman", "Noto Serif SC", serif; fill: #333333; }
+      .head { font: 700 23px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .mid { font: 700 26px "Times New Roman", "Noto Serif SC", serif; fill: #111111; }
+      .small { font: 400 17px "Times New Roman", "Noto Serif SC", serif; fill: #444444; }
+      .arrow { stroke: #111111; stroke-width: 4.5; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#111111"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="#ffffff"/>
+  <text x="800" y="72" text-anchor="middle" class="title">Graphical Abstract of VibeFilming</text>
+
+  <rect x="80" y="180" width="330" height="440" rx="10" ry="10" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="245" y="235" text-anchor="middle" class="head">Input</text>
+  <text x="245" y="290" text-anchor="middle" class="mid">Natural-language creative intent</text>
+  <text x="245" y="338" text-anchor="middle" class="text">Users only describe the desired short video</text>
+  <text x="245" y="370" text-anchor="middle" class="text">without prompt engineering, parameter tuning,</text>
+  <text x="245" y="402" text-anchor="middle" class="text">or manual orchestration of generation tools.</text>
+  <text x="245" y="475" text-anchor="middle" class="small">Example:</text>
+  <text x="245" y="510" text-anchor="middle" class="text">“Create a 30-second warm pet adoption video</text>
+  <text x="245" y="542" text-anchor="middle" class="text">with emotional ending and clear call-to-action.”</text>
+
+  <rect x="635" y="135" width="330" height="530" rx="10" ry="10" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="800" y="190" text-anchor="middle" class="head">Core Mechanism</text>
+  <rect x="705" y="235" width="190" height="72" rx="8" ry="8" fill="#111111"/>
+  <text x="800" y="279" text-anchor="middle" style="font:700 22px 'Times New Roman','Noto Serif SC',serif; fill:#ffffff;">Planning</text>
+  <rect x="705" y="337" width="190" height="72" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="800" y="381" text-anchor="middle" class="head">Generation</text>
+  <rect x="705" y="439" width="190" height="72" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="800" y="483" text-anchor="middle" class="head">Director-style Review</text>
+  <rect x="705" y="541" width="190" height="72" rx="8" ry="8" fill="#ffffff" stroke="#111111" stroke-width="2"/>
+  <text x="800" y="585" text-anchor="middle" class="head">Targeted Rework</text>
+  <path class="arrow" d="M800 307 L800 337"/>
+  <path class="arrow" d="M800 409 L800 439"/>
+  <path class="arrow" d="M800 511 L800 541"/>
+  <path class="arrow" d="M705 577 C615 577 615 275 705 275"/>
+  <text x="635" y="425" class="small">feedback loop</text>
+
+  <rect x="1190" y="180" width="330" height="440" rx="10" ry="10" fill="#ffffff" stroke="#111111" stroke-width="2.2"/>
+  <text x="1355" y="235" text-anchor="middle" class="head">Output</text>
+  <text x="1355" y="290" text-anchor="middle" class="mid">Directly deliverable final video</text>
+  <text x="1355" y="338" text-anchor="middle" class="text">The system composes reviewed shots,</text>
+  <text x="1355" y="370" text-anchor="middle" class="text">performs post-processing and BGM generation,</text>
+  <text x="1355" y="402" text-anchor="middle" class="text">and exports a finished video rather than raw clips.</text>
+  <text x="1355" y="485" text-anchor="middle" class="small">Main properties:</text>
+  <text x="1355" y="520" text-anchor="middle" class="text">Low barrier  |  Closed loop  |  Adaptive scheduling</text>
+  <text x="1355" y="552" text-anchor="middle" class="text">Decoupled knowledge  |  Stable multi-shot production</text>
+
+  <path class="arrow" d="M410 400 L635 400"/>
+  <path class="arrow" d="M965 400 L1190 400"/>
+
+  <text x="800" y="810" text-anchor="middle" class="text">VibeFilming transforms natural-language user intent into a full filmmaking workflow with planning, generation, review, corrective feedback,</text>
+  <text x="800" y="842" text-anchor="middle" class="text">and final delivery, thereby extending video generation from isolated clips to an end-to-end autonomous director paradigm.</text>
+</svg>
