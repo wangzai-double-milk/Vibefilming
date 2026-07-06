@@ -388,7 +388,7 @@ def _resolve_reference_video(ref_video: Optional[str]) -> Optional[str]:
     name="gen_video_t2v",
     desc="Seedance 2.0 视频生成（唯一入口）。提交后立即返回 task_id，用 query_video_task 轮询。支持 reference_images / reference_video_url（最多 9 图 + 1 视频）；本 shot 的过审故事板、角色、场景、关键道具参考应放进 reference_images。默认 generate_audio=true，声音意图写在 prompt/audio_plan。",
     params={
-        "prompt": {"type": str, "description": "视频描述。链式段必须显式承接上段（'承接上段视频，...'）。需要锁首/尾帧画面用文字暗示：'opening frame: ...; ending frame: ...'。有对白时用 {逐字台词} 写清说话内容、说话人和音色；环境音/动作声用 <具体音效>；需要背景音乐时写清音乐情绪、强弱和对白避让，不需要时明确写无背景音乐。"},
+        "prompt": {"type": str, "description": "视频描述。链式延展段必须配合 reference_video_url 使用，并在 prompt 开头写清“基于参考视频继续往后扩写；参考视频最后状态是……，本段从这个状态无缝继续……”，不能只写“承接上段”或只靠 opening/ending frame。非链式段可用 opening frame / ending frame 文字暗示首尾咬合。有对白时用 {逐字台词} 写清说话内容、说话人和音色；环境音/动作声用 <具体音效>；需要背景音乐时写清音乐情绪、强弱和对白避让，不需要时明确写无背景音乐。"},
         "name": {"type": str, "description": "产物文件名（不含扩展名）"},
         "duration": {"type": int, "description": "视频时长 4-15 秒", "minimum": 4, "maximum": 15},
         "generate_audio": {"type": bool, "description": "Seedance 2.0 原生同步音频，默认 true。用于原生对白/环境声/必要音效；是否加背景音乐由 prompt/audio_plan 决定。只有明确要全静音时才传 false", "default": True},
