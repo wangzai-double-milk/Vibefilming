@@ -240,6 +240,10 @@ def short_text(value: Any, limit: int = 150) -> str:
     return text[: limit - 1] + "…" if len(text) > limit else text
 
 
+def full_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
 def build_graph(project_dir: Path) -> dict[str, Any]:
     project_dir = project_dir.resolve()
     builder = GraphBuilder(project_dir)
@@ -322,8 +326,12 @@ def build_graph(project_dir: Path) -> dict[str, Any]:
             if kind == "composed" and suffix not in VIDEO_EXTS:
                 continue
             status = "done"
+            node_meta: dict[str, Any] = {"size_bytes": path.stat().st_size}
             if kind == "review":
                 status = status_from_review(path)
+                verdict = review_result_text(read_json(path))
+                if verdict:
+                    node_meta["conclusion"] = full_text(verdict)
             if kind == "composed" and "final" in path.stem:
                 status = manifest.get("phases", {}).get("compose", {}).get("status", "done")
             builder.add_node(
@@ -333,7 +341,7 @@ def build_graph(project_dir: Path) -> dict[str, Any]:
                 path=path,
                 status=status,
                 subtitle=subdir,
-                meta={"size_bytes": path.stat().st_size},
+                meta=node_meta,
             )
 
     apply_tool_edges(builder, tool_calls, plan_id)
@@ -380,7 +388,11 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
                 title_from_file(path),
                 path=path,
                 status="done" if path.exists() else "planned",
-                meta={"prompt": short_text(args.get("prompt", ""))},
+                meta={
+                    "prompt": short_text(args.get("prompt", "")),
+                    "prompt_full": full_text(args.get("prompt", "")),
+                    "reference_images": [builder.rel(r) or str(r) for r in (args.get("reference_images") or [])],
+                },
             )
             refs = args.get("reference_images") or []
             if refs:
@@ -406,7 +418,13 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
                 path=path,
                 status="done" if path.exists() else "running",
                 subtitle=f"{args.get('duration', '?')}s · {args.get('ratio', '')}",
-                meta={"prompt": short_text(args.get("prompt", ""), 260)},
+                meta={
+                    "prompt": short_text(args.get("prompt", ""), 260),
+                    "prompt_full": full_text(args.get("prompt", "")),
+                    "duration": args.get("duration"),
+                    "ratio": args.get("ratio"),
+                    "reference_images": [builder.rel(r) or str(r) for r in (args.get("reference_images") or [])],
+                },
             )
             refs = args.get("reference_images") or []
             if not refs:
@@ -426,13 +444,26 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
         elif tool == "vlm_understand":
             name = args.get("name") or "review"
             review_path = builder.project_dir / "reviews" / f"{name}.json"
+            targets_rel = []
+            if args.get("video"):
+                targets_rel.append(builder.rel(args["video"]) or str(args["video"]))
+            targets_rel.extend(builder.rel(t) or str(t) for t in (args.get("images") or []))
+            review_meta = {
+                "question": short_text(args.get("question", ""), 260),
+                "question_full": full_text(args.get("question", "")),
+                "targets": targets_rel,
+            }
+            if review_path.exists():
+                verdict = review_result_text(read_json(review_path))
+                if verdict:
+                    review_meta["conclusion"] = full_text(verdict)
             review_id = builder.add_node(
                 "review",
                 "review",
                 title_from_file(review_path),
                 path=review_path,
                 status=status_from_review(review_path) if review_path.exists() else "planned",
-                meta={"question": short_text(args.get("question", ""), 260)},
+                meta=review_meta,
             )
             targets = []
             if args.get("video"):
@@ -795,9 +826,199 @@ def render_html(graph: dict[str, Any]) -> str:
       border-radius: 14px;
       text-align: center;
     }}
+    .card {{ cursor: pointer; }}
+    .overlay {{
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 6, 8, .55);
+      backdrop-filter: blur(2px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s ease;
+      z-index: 40;
+    }}
+    .overlay.open {{ opacity: 1; pointer-events: auto; }}
+    .drawer {{
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100vh;
+      width: 460px;
+      max-width: 92vw;
+      background: rgba(14, 17, 21, .98);
+      border-left: 1px solid rgba(214,166,79,.28);
+      box-shadow: -24px 0 60px rgba(0,0,0,.5);
+      transform: translateX(104%);
+      transition: transform .24s cubic-bezier(.22,.61,.36,1);
+      z-index: 41;
+      display: flex;
+      flex-direction: column;
+    }}
+    .drawer.open {{ transform: translateX(0); }}
+    .drawer-head {{
+      padding: 20px 22px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      position: relative;
+    }}
+    .drawer-head .kind {{ margin-bottom: 8px; }}
+    .drawer-head h3 {{
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.3;
+      padding-right: 30px;
+    }}
+    .drawer-head .path {{
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      word-break: break-all;
+    }}
+    .drawer-close {{
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.14);
+      background: rgba(255,255,255,.05);
+      color: var(--text);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }}
+    .drawer-close:hover {{ border-color: var(--gold); color: var(--gold); }}
+    .drawer-body {{
+      padding: 18px 22px 40px;
+      overflow-y: auto;
+      flex: 1;
+    }}
+    .section {{ margin-bottom: 22px; }}
+    .section-title {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--gold);
+      font-size: 11px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }}
+    .section-title .count {{
+      color: var(--muted);
+      letter-spacing: 0;
+      text-transform: none;
+    }}
+    .field {{ margin-bottom: 12px; }}
+    .field-label {{
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }}
+    .field-value {{
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: var(--text);
+      word-break: break-word;
+      white-space: pre-wrap;
+    }}
+    .field-value.mono {{
+      font-family: "SFMono-Regular", ui-monospace, Menlo, monospace;
+      font-size: 11.5px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 10px;
+      padding: 10px 12px;
+      max-height: 240px;
+      overflow-y: auto;
+    }}
+    .ref-item {{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 8px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease;
+    }}
+    .ref-item:hover {{ border-color: rgba(214,166,79,.6); background: rgba(214,166,79,.06); }}
+    .ref-item.plain {{ cursor: default; }}
+    .ref-item.plain:hover {{ border-color: rgba(255,255,255,.08); background: none; }}
+    .ref-thumb {{
+      width: 54px;
+      height: 54px;
+      border-radius: 9px;
+      object-fit: cover;
+      background: #151515;
+      flex: 0 0 auto;
+    }}
+    .ref-thumb.placeholder {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 9px;
+      letter-spacing: .1em;
+    }}
+    .ref-info {{ min-width: 0; flex: 1; }}
+    .ref-kind {{
+      color: var(--muted);
+      font-size: 9px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }}
+    .ref-title {{
+      font-size: 12px;
+      font-weight: 600;
+      margin: 2px 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .ref-edge {{ color: var(--gold); font-size: 10px; }}
+    .out-media {{
+      width: 100%;
+      border-radius: 12px;
+      max-height: 260px;
+      object-fit: contain;
+      background: #0e0e0e;
+      display: block;
+      margin-bottom: 10px;
+    }}
+    .out-media.placeholder {{
+      height: 140px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: .06em;
+      border: 1px dashed rgba(255,255,255,.12);
+    }}
+    .drawer-empty {{
+      color: rgba(255,255,255,.3);
+      font-size: 12px;
+      font-style: italic;
+      padding: 6px 0;
+    }}
   </style>
 </head>
 <body>
+  <div id="overlay" class="overlay"></div>
+  <aside id="drawer" class="drawer">
+    <div class="drawer-head">
+      <button id="drawer-close" class="drawer-close" title="关闭">×</button>
+      <div id="drawer-kind" class="kind"></div>
+      <h3 id="drawer-title"></h3>
+      <div id="drawer-path" class="path"></div>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </aside>
   <header>
     <div class="eyebrow">VibeFilming Workflow Canvas</div>
     <h1>{escape(graph["project"]["brief"])}</h1>
@@ -927,6 +1148,10 @@ def render_html(graph: dict[str, Any]) -> str:
       `);
       card.addEventListener('mouseenter', () => focusNode(node.id));
       card.addEventListener('mouseleave', clearFocus);
+      card.addEventListener('click', ev => {{
+        if (ev.target.closest('video')) return;
+        openDrawer(node.id);
+      }});
       return card;
     }}
 
@@ -977,6 +1202,160 @@ def render_html(graph: dict[str, Any]) -> str:
       document.querySelectorAll('.edge').forEach(edge => edge.classList.remove('fade'));
     }}
 
+    let activeDrawerId = null;
+    const overlayEl = document.getElementById('overlay');
+    const drawerEl = document.getElementById('drawer');
+    const drawerBody = document.getElementById('drawer-body');
+
+    function nodeById(id) {{
+      return (graph.nodes || []).find(n => n.id === id) || null;
+    }}
+
+    function incomingEdges(id) {{ return (graph.edges || []).filter(e => e.target === id); }}
+    function outgoingEdges(id) {{ return (graph.edges || []).filter(e => e.source === id); }}
+
+    function refItemHtml(node, edgeLabel) {{
+      if (!node) return '';
+      let thumb;
+      if (node.path && isImage(node.path)) {{
+        thumb = `<img class="ref-thumb" src="${{escapeHtml(node.path)}}" data-fallback="${{escapeHtml(kindLabel(node.kind))}}" />`;
+      }} else if (node.path && isVideo(node.path)) {{
+        thumb = `<video class="ref-thumb" src="${{escapeHtml(node.path)}}" muted preload="metadata" data-fallback="${{escapeHtml(kindLabel(node.kind))}}"></video>`;
+      }} else {{
+        thumb = `<div class="ref-thumb placeholder">${{escapeHtml(kindLabel(node.kind))}}</div>`;
+      }}
+      const edgeTag = edgeLabel ? `<span class="ref-edge">${{escapeHtml(edgeLabel)}}</span>` : '';
+      return `<div class="ref-item" data-goto="${{escapeHtml(node.id)}}">
+        ${{thumb}}
+        <div class="ref-info">
+          <div class="ref-kind">${{kindLabel(node.kind)}} ${{edgeTag}}</div>
+          <div class="ref-title">${{escapeHtml(node.title)}}</div>
+        </div>
+      </div>`;
+    }}
+
+    function outputMediaHtml(node) {{
+      if (node.path && isImage(node.path)) {{
+        return `<img class="out-media" src="${{escapeHtml(node.path)}}" data-fallback="产物暂不可预览" />`;
+      }}
+      if (node.path && isVideo(node.path) && node.status === 'done') {{
+        return `<video class="out-media" src="${{escapeHtml(node.path)}}" controls muted preload="metadata" data-fallback="产物暂不可预览"></video>`;
+      }}
+      return '';
+    }}
+
+    function wireMediaFallback(container) {{
+      container.querySelectorAll('img[data-fallback], video[data-fallback]').forEach(el => {{
+        const swap = () => {{
+          if (el.dataset.swapped) return;
+          el.dataset.swapped = '1';
+          const box = document.createElement('div');
+          box.className = el.classList.contains('out-media') ? 'out-media placeholder' : 'ref-thumb placeholder';
+          box.textContent = el.dataset.fallback || '暂无预览';
+          el.replaceWith(box);
+        }};
+        if (el.tagName === 'IMG') {{
+          if (el.complete && el.naturalWidth === 0) swap();
+          el.addEventListener('error', swap);
+        }} else {{
+          el.addEventListener('error', swap);
+        }}
+      }});
+    }}
+
+    function buildDrawer(node) {{
+      const meta = node.meta || {{}};
+      const inEdges = incomingEdges(node.id);
+      const outEdges = outgoingEdges(node.id);
+      let html = '';
+
+      // ---- 输入 ----
+      html += `<div class="section"><div class="section-title">输入 <span class="count">Inputs</span></div>`;
+      let inputInner = '';
+      const promptText = meta.prompt_full || meta.prompt;
+      if (promptText) {{
+        inputInner += `<div class="field"><div class="field-label">生成 Prompt</div><div class="field-value mono">${{escapeHtml(promptText)}}</div></div>`;
+      }}
+      const questionText = meta.question_full || meta.question;
+      if (questionText) {{
+        inputInner += `<div class="field"><div class="field-label">审查问题</div><div class="field-value mono">${{escapeHtml(questionText)}}</div></div>`;
+      }}
+      const upstream = inEdges.map(e => refItemHtml(nodeById(e.source), e.label)).filter(Boolean).join('');
+      if (upstream) {{
+        inputInner += `<div class="field"><div class="field-label">上游来源 / 参考</div>${{upstream}}</div>`;
+      }}
+      if (!inputInner) inputInner = `<div class="drawer-empty">这是一个源节点，没有上游输入。</div>`;
+      html += inputInner + `</div>`;
+
+      // ---- 输出 ----
+      html += `<div class="section"><div class="section-title">输出 <span class="count">Outputs</span></div>`;
+      let outputInner = outputMediaHtml(node);
+      if (node.kind === 'review' && meta.conclusion) {{
+        outputInner += `<div class="field"><div class="field-label">审查结论</div><div class="field-value mono">${{escapeHtml(meta.conclusion)}}</div></div>`;
+      }}
+      if (node.path) {{
+        outputInner += `<div class="field"><div class="field-label">产物文件</div><div class="field-value">${{escapeHtml(node.path)}}</div></div>`;
+      }}
+      const downstream = outEdges.map(e => refItemHtml(nodeById(e.target), e.label)).filter(Boolean).join('');
+      if (downstream) {{
+        outputInner += `<div class="field"><div class="field-label">下游去向</div>${{downstream}}</div>`;
+      }}
+      if (!outputInner) outputInner = `<div class="drawer-empty">${{node.status === 'missing' ? '尚未生成，暂无产物。' : '暂无可展示的产物。'}}</div>`;
+      html += outputInner + `</div>`;
+
+      // ---- 其他信息 ----
+      const extras = [];
+      if (meta.duration != null) extras.push(['时长', meta.duration + 's']);
+      if (meta.ratio) extras.push(['画幅', meta.ratio]);
+      if (meta.segments != null) extras.push(['片段数', meta.segments]);
+      if (meta.start_time != null || meta.end_time != null) extras.push(['时间轴', `${{meta.start_time ?? '?'}} → ${{meta.end_time ?? '?'}}`]);
+      if (meta.onscreen_text) extras.push(['画面文字', meta.onscreen_text]);
+      if (Array.isArray(meta.assets_needed) && meta.assets_needed.length) {{
+        extras.push(['所需资产', meta.assets_needed.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join('、')]);
+      }}
+      if (meta.size_bytes != null) extras.push(['文件大小', (meta.size_bytes / 1024).toFixed(1) + ' KB']);
+      if (extras.length) {{
+        html += `<div class="section"><div class="section-title">其他信息 <span class="count">Details</span></div>`;
+        html += extras.map(([k, v]) => `<div class="field"><div class="field-label">${{escapeHtml(k)}}</div><div class="field-value">${{escapeHtml(v)}}</div></div>`).join('');
+        html += `</div>`;
+      }}
+      return html;
+    }}
+
+    function renderDrawer() {{
+      const node = activeDrawerId ? nodeById(activeDrawerId) : null;
+      if (!node) {{ closeDrawer(); return; }}
+      document.getElementById('drawer-kind').innerHTML =
+        `<span class="status-dot ${{statusClass(node.status)}}"></span>${{kindLabel(node.kind)}} · ${{node.status || 'unknown'}}`;
+      document.getElementById('drawer-title').textContent = node.title;
+      document.getElementById('drawer-path').textContent = node.path || '';
+      drawerBody.innerHTML = buildDrawer(node);
+      wireMediaFallback(drawerBody);
+      drawerBody.querySelectorAll('[data-goto]').forEach(el => {{
+        el.addEventListener('click', () => openDrawer(el.dataset.goto));
+      }});
+    }}
+
+    function openDrawer(id) {{
+      activeDrawerId = id;
+      overlayEl.classList.add('open');
+      drawerEl.classList.add('open');
+      drawerBody.scrollTop = 0;
+      renderDrawer();
+      focusNode(id);
+    }}
+
+    function closeDrawer() {{
+      activeDrawerId = null;
+      overlayEl.classList.remove('open');
+      drawerEl.classList.remove('open');
+      clearFocus();
+    }}
+
+    overlayEl.addEventListener('click', closeDrawer);
+    document.getElementById('drawer-close').addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', ev => {{ if (ev.key === 'Escape') closeDrawer(); }});
+
     function applySearch() {{
       const q = searchEl.value.trim().toLowerCase();
       document.querySelectorAll('.card').forEach(card => {{
@@ -992,6 +1371,7 @@ def render_html(graph: dict[str, Any]) -> str:
       renderPhases();
       renderColumns();
       applySearch();
+      if (activeDrawerId) renderDrawer();
       requestAnimationFrame(drawEdges);
     }}
 
