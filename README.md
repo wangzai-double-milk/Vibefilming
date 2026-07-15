@@ -237,11 +237,22 @@ projects/<project_id>/
 
 ## 💬 加入体验交流群
 
-想抢先体验、反馈问题、和其他「AI 导演」一起玩？扫码加入飞书交流群 👇
+想抢先体验、反馈问题、和其他「AI 导演」一起玩？扫码加入飞书或者微信交流群 👇
 
 <div align="center">
 
-<img src="./docs/20260608-160240.png" alt="VibeFilming 飞书体验交流群" width="240"/>
+<table>
+  <tr>
+    <td align="center">
+      <img src="./docs/20260608-160240.png" alt="VibeFilming 飞书体验交流群" width="220"/><br/>
+      <b>飞书交流群</b>
+    </td>
+    <td align="center">
+      <img src="./docs/20260715-102049.jpg" alt="VibeFilming 微信交流群" width="220"/><br/>
+      <b>微信交流群</b>
+    </td>
+  </tr>
+</table>
 
 *扫码进群，一起把短片拍出来*
 
