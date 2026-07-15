@@ -726,28 +726,9 @@ def _run_ffmpeg(args: list, timeout: int = 300) -> dict:
     return {"ok": True}
 
 
-def _find_ffprobe() -> Optional[str]:
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        candidate = FFMPEG.replace("ffmpeg", "ffprobe")
-        if os.path.exists(candidate):
-            ffprobe = candidate
-    return ffprobe
-
-
 def has_audio_stream(media: str) -> bool:
-    """判断媒体是否包含音轨。优先 ffprobe；失败时回退解析 ffmpeg stderr。"""
-    ffprobe = _find_ffprobe()
-    if ffprobe:
-        try:
-            r = subprocess.run(
-                [ffprobe, "-v", "error", "-select_streams", "a:0",
-                 "-show_entries", "stream=index", "-of", "csv=p=0", str(media)],
-                capture_output=True, text=True, timeout=15,
-            )
-            return bool(r.stdout.strip())
-        except Exception:
-            pass
+    """判断媒体是否包含音轨。本机只有 imageio 附带的 ffmpeg、没有 ffprobe，
+    统一用 ffmpeg 空解码后解析 stderr 里的 "Audio:"。"""
     try:
         r = subprocess.run(
             [FFMPEG, "-hide_banner", "-i", str(media)],
@@ -781,21 +762,8 @@ def _audio_fade_filter(fade_in: float = 0.0, fade_out: float = 0.0,
 
 
 def probe_video_size(clip: str) -> tuple[int, int]:
-    """探测视频宽高。失败时抛错，避免 concat filter 靠猜导致隐性失败。"""
-    ffprobe = _find_ffprobe()
-    if ffprobe:
-        try:
-            r = subprocess.run(
-                [ffprobe, "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", str(clip)],
-                capture_output=True, text=True, timeout=15,
-            )
-            s = r.stdout.strip()
-            if "x" in s:
-                w, h = s.split("x", 1)
-                return int(w), int(h)
-        except Exception:
-            pass
+    """探测视频宽高。失败时抛错，避免 concat filter 靠猜导致隐性失败。
+    本机没有 ffprobe，直接用 ffmpeg 空解码解析 stderr 里的分辨率。"""
     try:
         r = subprocess.run(
             [FFMPEG, "-hide_banner", "-i", str(clip)],
@@ -1005,7 +973,7 @@ def video_overlay(base: str, pip: str, save_path: Path,
 def video_fade(clip: str, save_path: Path, fade_in: float = 0.5,
                fade_out: float = 0.5, total_duration: Optional[float] = None,
                preset: str = "ultrafast") -> dict:
-    """头尾黑场。total_duration 不传时尝试用 ffprobe 探测。"""
+    """头尾黑场。total_duration 不传时用 ffmpeg 探测。"""
     if total_duration is None:
         total_duration = probe_duration(clip)
     fade_out_start = max(0, total_duration - fade_out)
@@ -1242,27 +1210,10 @@ def extract_frames(clip: str, save_dir: Path, fps: float = 1.0) -> dict:
 
 
 def probe_duration(clip: str) -> float:
-    """探测视频时长（秒）。优先 ffprobe；没有 ffprobe 时回退到 ffmpeg stderr 解析。
-
-    注意：imageio_ffmpeg 只附带 ffmpeg，不带 ffprobe；所以在很多机器上
-    `shutil.which("ffprobe")` 是 None，必须有 ffmpeg 兜底，否则会返回错误的
-    默认值导致 video_fade 等下游计算出畸形 fade_out_start，整段视频黑屏。
-    """
-    # 1) 先尝试 ffprobe
-    ffprobe = _find_ffprobe()
-    if ffprobe:
-        try:
-            r = subprocess.run(
-                [ffprobe, "-v", "quiet", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", str(clip)],
-                capture_output=True, text=True, timeout=15,
-            )
-            s = r.stdout.strip()
-            if s:
-                return float(s)
-        except Exception:
-            pass
-    # 2) 回退：用 ffmpeg 自己跑一次空解码，从 stderr 抓 "Duration: HH:MM:SS.xx"
+    """探测视频时长（秒）。本机没有 ffprobe（imageio_ffmpeg 只附带 ffmpeg），
+    直接用 ffmpeg 空解码从 stderr 抓 "Duration: HH:MM:SS.xx"。
+    拿不到就抛异常，而不是返回错误默认值——否则 video_fade 会算出畸形
+    fade_out_start，整段视频黑屏。"""
     try:
         r = subprocess.run(
             [FFMPEG, "-hide_banner", "-i", str(clip)],
@@ -1275,7 +1226,6 @@ def probe_duration(clip: str) -> float:
             return int(h) * 3600 + int(mi) * 60 + float(sec)
     except Exception:
         pass
-    # 3) 实在拿不到：抛异常而不是返回错误的默认值，让上层立刻可见
     raise RuntimeError(f"probe_duration 失败，无法探测视频时长：{clip}")
 
 
