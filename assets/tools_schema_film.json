@@ -1,7 +1,7 @@
 [
   {"type": "function", "function": {
     "name": "code_run",
-    "description": "Code executor. Prefer python. Multi-call OK, use script param. Reply code block is executed if no script arg; prefer for single call to avoid escaping. No hardcoding bulk data",
+    "description": "Execute short logic or inspect/process existing files. Do NOT use code_run to author JSON, Markdown, scripts, prompts, plans, or other prose-heavy documents: write those directly with file_write. Never hardcode large dict/list/string payloads. Python is syntax-checked before execution; literal quotes inside strings must use a different outer quote, escaping, or triple quotes.",
     "parameters": {"type": "object", "properties": {
       "script": {"type": "string", "description": "[Mutually exclusive] NEVER use this param when use reply code block."},
       "type": {"type": "string", "enum": ["python", "powershell"], "description": "Code type", "default": "python"},
@@ -29,7 +29,7 @@
   }},
   {"type": "function", "function": {
     "name": "file_write",
-    "description": "Create/overwrite/append files. HUGE edits ONLY. Supports {{file:path:startLine:endLine}}, auto-expanded",
+    "description": "Create/overwrite/append files. Use this instead of code_run for JSON, Markdown, scripts, prompts, plans, and other prose-heavy documents. Overwritten .json content is validated before writing; escape literal ASCII quotes inside JSON strings or use typographic quotes such as “…”. HUGE edits ONLY. Supports {{file:path:startLine:endLine}}, auto-expanded",
     "parameters": {"type": "object", "properties": {
       "path": {"type": "string", "description": "File path"},
       "content": {"type": "string"},

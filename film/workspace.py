@@ -21,6 +21,7 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent.parent
 PROJECTS_ROOT = ROOT / "projects"
 PROJECTS_ROOT.mkdir(exist_ok=True)
+_SESSION_ACTIVE_PROJECT: Optional[str] = None
 
 
 def _now_str():
@@ -85,6 +86,39 @@ def manifest_path(project_id: str) -> Path:
 
 def read_manifest(project_id: str) -> dict:
     return json.loads(manifest_path(project_id).read_text(encoding="utf-8"))
+
+
+def list_projects(limit: int = 100) -> list[dict]:
+    """返回可恢复的历史项目，按最近更新时间倒序。
+
+    单个项目 manifest 损坏时跳过，避免一个旧目录拖垮整个项目管理页。
+    """
+    projects: list[dict] = []
+    for pdir in PROJECTS_ROOT.iterdir():
+        manifest_file = pdir / "manifest.json"
+        if not pdir.is_dir() or not manifest_file.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            modified_at = manifest_file.stat().st_mtime
+        except (OSError, json.JSONDecodeError):
+            continue
+        phases = manifest.get("phases") if isinstance(manifest.get("phases"), dict) else {}
+        phase_status = {
+            str(name): str(value.get("status", "pending")) if isinstance(value, dict) else str(value)
+            for name, value in phases.items()
+        }
+        projects.append({
+            "project_id": manifest.get("project_id") or pdir.name,
+            "brief": manifest.get("brief") or pdir.name,
+            "created_at": manifest.get("created_at") or "",
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(modified_at)),
+            "phases": phase_status,
+            "done_phases": sum(status == "done" for status in phase_status.values()),
+            "total_phases": len(phase_status),
+        })
+    projects.sort(key=lambda item: item["updated_at"], reverse=True)
+    return projects[:max(0, int(limit))]
 
 
 def write_manifest(project_id: str, manifest: dict):
@@ -180,14 +214,24 @@ def log_model_call(project_id: Optional[str], model_kind: str, detail: dict, raw
 
 
 def get_active_project() -> Optional[str]:
-    """读取 .active_project 标记文件，返回当前活跃项目 ID。"""
-    f = PROJECTS_ROOT / ".active_project"
-    if f.exists():
-        pid = f.read_text(encoding="utf-8").strip()
-        if (PROJECTS_ROOT / pid).exists():
-            return pid
+    """返回当前进程会话显式选择的项目。
+
+    不从 .active_project 自动恢复：新启动必须从空白画布开始。只有本会话调用
+    project_create / project_open 后才会设置活跃项目，避免旧项目画布和日志串入新会话。
+    """
+    if _SESSION_ACTIVE_PROJECT and (PROJECTS_ROOT / _SESSION_ACTIVE_PROJECT).exists():
+        return _SESSION_ACTIVE_PROJECT
     return None
 
 
 def set_active_project(project_id: str):
+    global _SESSION_ACTIVE_PROJECT
+    _SESSION_ACTIVE_PROJECT = project_id
+    # 仅记录最近使用项目，供显式恢复/排查；get_active_project 不会自动读取它。
     (PROJECTS_ROOT / ".active_project").write_text(project_id, encoding="utf-8")
+
+
+def clear_active_project():
+    """清空当前进程会话选择，不删除最近项目记录或任何项目文件。"""
+    global _SESSION_ACTIVE_PROJECT
+    _SESSION_ACTIVE_PROJECT = None

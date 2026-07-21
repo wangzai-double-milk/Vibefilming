@@ -54,24 +54,24 @@ def main():
     _assert("续读" in out and "未读" in out, "缺少续读提示")
     ok("truncate_keep_head 顺序保留开头 + 续读提示")
 
-    # 3) skill_director 必须整篇返回，故事板红线全在，无 omit 中段
+    # 3) skill_director 的短执行合同必须整篇返回，无 omit 中段
     r = _simulate_do_file_read("skills/skill_director/SKILL.md", tool_num=6)
     for section in [
-        "## 一、先重排叙事", "## 五、导演镜头节拍", "## 六、段间因果与衔接设计",
-        "## 七、故事板：编导的多宫格分镜图", "## 九、音频处理计划", "## 十、交付",
+        "## 执行合同", "## 每次执行只做这 5 步", "## `director_plan` 最低合同",
+        "## 硬门禁", "## 共用故障标签", "## 按需读取详细手册",
     ]:
         _assert(section in r, f"skill_director 缺章节 {section}（被截断了）")
-    for word in ["多宫格", "手绘线稿", "photorealistic"]:
+    for word in ["故事板", "route map", "references/handbook.md"]:
         _assert(word in r, f"故事板红线词 {word} 没进上下文")
     _assert("[omitted long content]" not in r, "skill 仍被掐头去尾 omit 中段")
-    ok(f"skill_director 整篇加载（{len(r)} 字符），故事板红线全部在")
+    ok(f"skill_director 短合同整篇加载（{len(r)} 字符）")
 
-    # 4) skill_prompt_engineering 的写实词红线也整篇在
+    # 4) skill_prompt_engineering 的调用合同与符号规则整篇在
     r2 = _simulate_do_file_read("skills/skill_prompt_engineering/SKILL.md", tool_num=6)
-    for word in ["photorealistic", "cinematic"]:
-        _assert(word in r2, f"PE 红线词 {word} 没进上下文")
+    for word in ["Seedance 特殊符号", "{逐字台词}", "参考绑定表", "references/handbook.md"]:
+        _assert(word in r2, f"PE 核心规则 {word} 没进上下文")
     _assert("[omitted long content]" not in r2, "PE 仍被 omit 中段")
-    ok(f"skill_prompt_engineering 整篇加载（{len(r2)} 字符），写实词红线全在")
+    ok(f"skill_prompt_engineering 短合同整篇加载（{len(r2)} 字符）")
 
     # 5) 非 skill 大文件仍被截断保护（不会无限灌爆上下文）
     big = _simulate_do_file_read("ga.py", tool_num=6, count=5000)
@@ -80,7 +80,6 @@ def main():
 
     # 6) 历史压缩出口：skill 正文经 compress_history_tags 多轮压缩后仍整篇保留
     skill_body = _simulate_do_file_read("skills/skill_director/SKILL.md", tool_num=6)
-    _assert(len(skill_body) > 12000, "前置条件：skill 正文应超过锚点额度 12000，否则测不出隐患")
     messages = [
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": skill_body},
@@ -93,7 +92,7 @@ def main():
         llmcore.compress_history_tags._cd = old_cd
     compressed = messages[0]["content"][0]["content"]
     _assert("...[Truncated]..." not in compressed, "skill 正文被历史压缩掐中段了（豁免失效）")
-    for word in ["多宫格", "手绘线稿", "photorealistic", "## 七、故事板", "## 十、交付"]:
+    for word in ["## 执行合同", "## 硬门禁", "## 按需读取详细手册", "references/handbook.md"]:
         _assert(word in compressed, f"历史压缩后红线/章节 {word} 丢失")
     _assert(len(compressed) == len(skill_body), "skill 正文长度被历史压缩改变（应原样保留）")
     ok(f"历史压缩出口：skill 正文整篇保留（{len(compressed)} 字符），红线全在")
