@@ -707,9 +707,16 @@ def render_html(graph: dict[str, Any]) -> str:
     }}
     main {{
       height: calc(100vh - 112px);
-      overflow: auto;
+      overflow: scroll;
       position: relative;
       padding: 28px 28px 80px;
+      cursor: grab;
+      scrollbar-gutter: stable;
+      overscroll-behavior: contain;
+    }}
+    main.dragging {{
+      cursor: grabbing;
+      user-select: none;
     }}
     #canvas {{
       position: relative;
@@ -935,6 +942,12 @@ def render_html(graph: dict[str, Any]) -> str:
       max-height: 240px;
       overflow-y: auto;
     }}
+    .artifact-content {{
+      max-height: 56vh !important;
+      min-height: 120px;
+      white-space: pre-wrap;
+      tab-size: 2;
+    }}
     .ref-item {{
       display: flex;
       gap: 10px;
@@ -1043,6 +1056,7 @@ def render_html(graph: dict[str, Any]) -> str:
     const columnsEl = document.getElementById('columns');
     const edgesEl = document.getElementById('edges');
     const canvasEl = document.getElementById('canvas');
+    const viewportEl = document.querySelector('main');
     const searchEl = document.getElementById('search');
     const refreshEl = document.getElementById('refresh-status');
 
@@ -1293,6 +1307,9 @@ def render_html(graph: dict[str, Any]) -> str:
       if (node.kind === 'review' && meta.conclusion) {{
         outputInner += `<div class="field"><div class="field-label">审查结论</div><div class="field-value mono">${{escapeHtml(meta.conclusion)}}</div></div>`;
       }}
+      if ((node.kind === 'script' || node.kind === 'director_plan') && node.path) {{
+        outputInner += `<div class="field"><div class="field-label">文件内容</div><pre class="field-value mono artifact-content" data-artifact-content>正在读取…</pre></div>`;
+      }}
       if (node.path) {{
         outputInner += `<div class="field"><div class="field-label">产物文件</div><div class="field-value">${{escapeHtml(node.path)}}</div></div>`;
       }}
@@ -1322,6 +1339,27 @@ def render_html(graph: dict[str, Any]) -> str:
       return html;
     }}
 
+    async function loadArtifactContent(node) {{
+      if (!node || !node.path || !['script', 'director_plan'].includes(node.kind)) return;
+      const target = drawerBody.querySelector('[data-artifact-content]');
+      if (!target) return;
+      const requestedId = node.id;
+      try {{
+        const joiner = node.path.includes('?') ? '&' : '?';
+        const response = await fetch(encodeURI(node.path + joiner + 'ts=' + Date.now()), {{cache: 'no-store'}});
+        if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
+        let content = await response.text();
+        if (node.kind === 'director_plan') {{
+          try {{ content = JSON.stringify(JSON.parse(content), null, 2); }} catch (_) {{}}
+        }}
+        if (activeDrawerId === requestedId && target.isConnected) target.textContent = content;
+      }} catch (err) {{
+        if (activeDrawerId === requestedId && target.isConnected) {{
+          target.textContent = '文件读取失败：' + err.message;
+        }}
+      }}
+    }}
+
     function renderDrawer() {{
       const node = activeDrawerId ? nodeById(activeDrawerId) : null;
       if (!node) {{ closeDrawer(); return; }}
@@ -1331,6 +1369,7 @@ def render_html(graph: dict[str, Any]) -> str:
       document.getElementById('drawer-path').textContent = node.path || '';
       drawerBody.innerHTML = buildDrawer(node);
       wireMediaFallback(drawerBody);
+      loadArtifactContent(node);
       drawerBody.querySelectorAll('[data-goto]').forEach(el => {{
         el.addEventListener('click', () => openDrawer(el.dataset.goto));
       }});
@@ -1411,6 +1450,36 @@ def render_html(graph: dict[str, Any]) -> str:
     }}
 
     searchEl.addEventListener('input', applySearch);
+    let dragStart = null;
+    viewportEl.addEventListener('pointerdown', event => {{
+      if (event.button !== 0 || event.target.closest('input, button, a, video, .card, .drawer, .overlay')) return;
+      dragStart = {{
+        x: event.clientX,
+        y: event.clientY,
+        left: viewportEl.scrollLeft,
+        top: viewportEl.scrollTop,
+      }};
+      viewportEl.classList.add('dragging');
+      viewportEl.setPointerCapture(event.pointerId);
+    }});
+    viewportEl.addEventListener('pointermove', event => {{
+      if (!dragStart) return;
+      viewportEl.scrollLeft = dragStart.left - (event.clientX - dragStart.x);
+      viewportEl.scrollTop = dragStart.top - (event.clientY - dragStart.y);
+    }});
+    function endDrag(event) {{
+      if (!dragStart) return;
+      dragStart = null;
+      viewportEl.classList.remove('dragging');
+      if (viewportEl.hasPointerCapture(event.pointerId)) viewportEl.releasePointerCapture(event.pointerId);
+    }}
+    viewportEl.addEventListener('pointerup', endDrag);
+    viewportEl.addEventListener('pointercancel', endDrag);
+    viewportEl.addEventListener('wheel', event => {{
+      if (!event.shiftKey) return;
+      event.preventDefault();
+      viewportEl.scrollLeft += event.deltaY || event.deltaX;
+    }}, {{passive: false}});
 
     renderAll();
     startPolling();
@@ -1463,7 +1532,9 @@ class _ResilientHandlerMixin:
     def copyfile(self, source, outputfile):
         try:
             super().copyfile(source, outputfile)
-        except self._CLIENT_DISCONNECT:
+        except OSError:
+            # 写响应体给浏览器时的任何 OS 级写失败（断连、ENOBUFS 缓冲耗尽等）
+            # 都意味着这次响应送不到客户端了，重抛只会刷屏，静默丢弃即可。
             pass
 
     def finish(self):

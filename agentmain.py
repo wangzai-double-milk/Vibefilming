@@ -92,15 +92,17 @@ def build_skills_index():
             continue
         if not trigger:
             continue
-        # 单行命令清单格式：触发条件在前、命令在后，命令前用 → 显式分隔
+        # 单行命令清单格式：触发条件在前、读取命令在后，命令前用 → 显式分隔
         # 不用 markdown 表格——之前实测 agent 会把表格里 `skills/xxx/SKILL.md` 截成 `SKILL.md` 调用失败
         # 用相对路径 skills/<name>/SKILL.md：路径短不易被截断；cwd=temp 也能读到——
         #   ga.py 的 _get_abs_path 已加仓库根回退兜底（temp/skills 不存在时回退到 <repo>/skills）。
         rel_fp = f"skills/{name}/SKILL.md"
-        rows.append(f"- **触发**：{trigger}\n  **立即执行** → `file_read path=\"{rel_fp}\"`")
+        rows.append(f"- **触发**：{trigger}\n  **匹配后读取** → `file_read path=\"{rel_fp}\"`")
     if not rows:
         return ''
     header = (
+        "**动态路由规则**：先比较所有 description，只选择直接匹配当前目标、产物或故障的"
+        "最小集合；未匹配的不要读取。每条 skill 相互独立，不推断包含关系。\n\n"
         "⛔ **路径完整性铁律**：下列每条 `file_read` 命令的 path 参数必须**逐字符完整复制**"
         "（完整的 `skills/<名字>/SKILL.md`），**严禁**简写成 `SKILL.md`、`./SKILL.md` 或任何省略 "
         "`skills/<名字>/` 前缀的形式——整个路径是不可分割的整体，少一段就读不到文件。\n\n"
@@ -240,6 +242,21 @@ class GenericAgent:
             self.history.append(f"[USER]: {rquery}")
             
             sys_prompt = get_system_prompt() + getattr(self.llmclient.backend, 'extra_sys_prompt', '')
+            try:
+                from film import workspace as film_workspace
+                active_pid = film_workspace.get_active_project()
+                if active_pid:
+                    active_manifest = film_workspace.read_manifest(active_pid)
+                    sys_prompt += (
+                        "\n[Active Film Project]\n"
+                        f"- project_id: {active_pid}\n"
+                        f"- brief: {active_manifest.get('brief', '')}\n"
+                        f"- project_dir: {film_workspace.project_dir(active_pid)}\n"
+                        "该项目已由 Studio 或项目工具显式选定。直接在此项目内继续工作；"
+                        "不要再次调用 project_create，除非用户明确要求另开一部影片。\n"
+                    )
+            except Exception as e:
+                print(f'[WARN] 活跃项目上下文注入失败: {e}')
             if self.peer_hint: sys_prompt += f"\n[Peer] 用户提及其他会话/后台任务状态时: temp/model_responses/ (只找近期修改的文件尾部)\n"
             handler = GenericAgentHandler(self, self.history, os.path.join(script_dir, 'temp'))
             try:
@@ -295,6 +312,9 @@ if __name__ == '__main__':
     parser.add_argument('--llm_no', type=int, default=0)
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--nobg', action='store_true')
+    parser.add_argument('--no-studio', action='store_true', help='交互模式下不启动本地 Studio 网页')
+    parser.add_argument('--open-studio', action='store_true', help='启动后自动在浏览器打开 Studio')
+    parser.add_argument('--studio-port', type=int, default=8764, help='Studio 本地端口，默认 8764')
     args, _unknown = parser.parse_known_args()
     _reflect_args = dict(zip([k.lstrip('-') for k in _unknown[::2]], _unknown[1::2])) if _unknown else {}
 
@@ -385,6 +405,20 @@ if __name__ == '__main__':
             if getattr(mod, 'ONCE', False): print('[Reflect] ONCE=True, exiting.'); break
     else:
         agent.inc_out = True
+        if not args.no_studio:
+            try:
+                from film.studio import start_studio_server
+                studio = start_studio_server(agent, port=args.studio_port)
+                if studio:
+                    print(f'\n\x1b[92m● VibeFilming Studio\x1b[0m {studio["url"]}  '
+                          f'\x1b[90m(左侧对话 · 右侧实时画布)\x1b[0m\n', flush=True)
+                    if args.open_studio:
+                        import webbrowser
+                        webbrowser.open(studio["url"])
+                else:
+                    print('[WARN] Studio 启动失败，继续使用终端对话。')
+            except Exception as e:
+                print(f'[WARN] Studio 启动失败，继续使用终端对话：{e}')
         # 输入读取器：优先 prompt_toolkit（Enter 发送 / Alt+Enter 换行 / 多行粘贴不截断 / 历史），
         # 不可用时回退到内置 input()。
         read_user_input = None

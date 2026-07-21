@@ -139,9 +139,10 @@ python3 agentmain.py
 }
 ```
 
-进控制台后直接说人话，同时点终端链接打开实时画布：
+启动后会同时提供终端对话和本地 Studio 链接。Studio 左侧是对话，右侧是随项目自动刷新的工作流画布：
 
 ```
+● VibeFilming Studio http://127.0.0.1:8764/  (左侧对话 · 右侧实时画布)
 ● 实时工作流看板 http://127.0.0.1:8765/canvas.html  (随进度自动刷新)
 
 > 给我做一段关于宠物的温情小视频
@@ -150,6 +151,8 @@ python3 agentmain.py
 ```
 
 退出：`Ctrl+C` 或 `/exit`。
+
+需要启动后自动打开 Studio：`python3 agentmain.py --open-studio`。只想使用终端界面：`python3 agentmain.py --no-studio`。
 
 > 🎵 **想自动配 BGM？** 选填 `volc.ak / volc.sk`（火山 BigMusic），不填也能跑完整流程。
 

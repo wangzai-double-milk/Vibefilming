@@ -18,9 +18,39 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
     yield f"[Action] Running {code_type} in {os.path.basename(cwd)}: {preview}\n"
     cwd = cwd or os.path.join(script_dir, 'temp'); tmp_path = None
     if code_type in ["python", "py"]:
+        try:
+            compile(code, "<code_run>", "exec")
+        except SyntaxError as e:
+            source = (e.text or "").rstrip()
+            pointer = " " * max((e.offset or 1) - 1, 0) + "^" if source else ""
+            location = f"line {e.lineno}"
+            if e.offset: location += f", column {e.offset}"
+            stdout = f"Python syntax preflight failed at {location}: {e.msg}"
+            if source: stdout += f"\n{source}\n{pointer}"
+            hint = (
+                "Fix the Python source before retrying. If prose contains literal quotes, "
+                "use a different outer quote, escape the inner quotes, or use triple quotes. "
+                "Do not embed a large JSON/Markdown/script/plan document in Python literals; "
+                "write that content directly with file_write."
+            )
+            stdout += f"\nHint: {hint}\n"
+            yield f"[Status] ❌ Syntax preflight failed\n[Stdout]\n{stdout}\n"
+            return {
+                "status": "error",
+                "error_type": "SyntaxError",
+                "message": e.msg,
+                "line": e.lineno,
+                "column": e.offset,
+                "source": source,
+                "hint": hint,
+                "stdout": stdout,
+                "exit_code": None,
+            }
         tmp_file = tempfile.NamedTemporaryFile(suffix=".ai.py", delete=False, mode='w', encoding='utf-8', dir=code_cwd)
         cr_header = os.path.join(script_dir, 'assets', 'code_run_header.py')
-        if os.path.exists(cr_header): tmp_file.write(open(cr_header, encoding='utf-8').read())
+        if os.path.exists(cr_header):
+            with open(cr_header, encoding='utf-8') as header_file:
+                tmp_file.write(header_file.read())
         tmp_file.write(code)
         tmp_path = tmp_file.name
         tmp_file.close()
@@ -185,6 +215,26 @@ def expand_file_refs(text, base_dir=None):
         if start < 1 or end > len(lines) or start > end: raise ValueError(f"行号越界: {path} 共{len(lines)}行, 请求{start}-{end}")
         return ''.join(lines[start-1:end])
     return re.sub(pattern, replacer, text)
+
+def validate_file_content(path, content, mode="overwrite"):
+    """Validate structured files before an overwrite can truncate the target."""
+    if mode != "overwrite" or Path(path).suffix.lower() != ".json":
+        return None
+    try:
+        json.loads(content)
+    except json.JSONDecodeError as e:
+        return {
+            "status": "error",
+            "error_type": "JSONDecodeError",
+            "message": e.msg,
+            "line": e.lineno,
+            "column": e.colno,
+            "hint": (
+                "Fix the JSON before retrying. Quotes used as prose punctuation inside a "
+                "JSON string must be escaped, or replaced with typographic quotes such as “…”."
+            ),
+        }
+    return None
     
 def file_patch(path: str, old_content: str, new_content: str):
     """在文件中寻找唯一的 old_content 块并替换为 new_content"""
@@ -443,6 +493,14 @@ class GenericAgentHandler(BaseHandler):
             return StepOutcome({"status": "error", "msg": "No content found. Blank is not supported. Put content inside <file_content>...</file_content> tags in your reply body before call file_write."}, next_prompt="\n")
         try:
             new_content = expand_file_refs(content, base_dir=self.cwd)
+            validation_error = validate_file_content(path, new_content, mode)
+            if validation_error:
+                yield (
+                    f"[Status] ❌ JSON validation failed at line "
+                    f"{validation_error['line']}, column {validation_error['column']}: "
+                    f"{validation_error['message']}\n"
+                )
+                return StepOutcome(validation_error, next_prompt="\n")
             if mode == "prepend":
                 old = open(path, 'r', encoding="utf-8").read() if os.path.exists(path) else ""
                 open(path, 'w', encoding="utf-8").write(new_content + old)
