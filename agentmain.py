@@ -1,10 +1,9 @@
 import os, sys, threading, queue, time, json, re, random, locale
-os.environ.setdefault('GA_LANG', 'zh' if any(k in (locale.getlocale()[0] or '').lower() for k in ('zh', 'chinese')) else 'en')
+os.environ.setdefault('GA_LANG', 'zh')
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")
 elif hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(errors='replace')
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 elif hasattr(sys.stderr, 'reconfigure'): sys.stderr.reconfigure(errors='replace')
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from llmcore import reload_runtime_config, ToolClient, MixinSession, NativeToolClient, NativeClaudeSession, NativeOAISession, resolve_client
 from agent_loop import agent_runner_loop
@@ -46,31 +45,9 @@ if not os.path.exists(cdp_cfg):
     except Exception as e: print(f'[WARN] CDP config init failed: {e} — advanced web features (tmwebdriver) will be unavailable.')
 
 def _parse_frontmatter_description(text):
-    """从 SKILL.md 顶部 YAML frontmatter（--- 包裹）里抽 description 字段。
-    遵循 Anthropic Agent Skills 标准：description 写明「这个 skill 干什么 + 什么时候用」。
-    解析不到返回 None。"""
-    if not text.startswith('---'):
-        return None
-    end = text.find('\n---', 3)
-    if end == -1:
-        return None
-    fm = text[3:end]
-    desc_lines, capturing = [], False
-    for line in fm.splitlines():
-        if not capturing:
-            m = re.match(r'\s*description\s*:\s*(.*)$', line)
-            if m:
-                capturing = True
-                first = m.group(1).strip().strip('"\'')
-                if first:
-                    desc_lines.append(first)
-            continue
-        # 已在 description 块：遇到下一个顶格 key 则停止，否则当作折行续接
-        if re.match(r'^[A-Za-z_][\w-]*\s*:', line):
-            break
-        if line.strip():
-            desc_lines.append(line.strip())
-    return ' '.join(desc_lines).strip() or None
+    """兼容已有调用；元信息解析统一由纯 Skill registry 提供。"""
+    from film.skill_registry import frontmatter
+    return frontmatter(text).get("description") or None
 
 
 def build_skills_index():
@@ -80,24 +57,22 @@ def build_skills_index():
       - --- 下面是详细做法正文（agent 按需 file_read）
     建一个带合规 SKILL.md 的文件夹即被自动收录，无需改 sys_prompt。
     没有 SKILL.md 或解析不到 description 的目录自动跳过（纯 SOP 文档、脚本、skill_search 等）。"""
-    import glob
-    skills_dir = os.path.join(script_dir, 'skills')
+    from pathlib import Path
+    from film.skill_registry import discover
     rows = []
-    for skill_fp in sorted(glob.glob(os.path.join(skills_dir, '*', 'SKILL.md'))):
-        name = os.path.basename(os.path.dirname(skill_fp))
-        try:
-            with open(skill_fp, 'r', encoding='utf-8') as f:
-                trigger = _parse_frontmatter_description(f.read())
-        except Exception:
-            continue
-        if not trigger:
-            continue
+    for record in discover(Path(script_dir) / 'skills'):
         # 单行命令清单格式：触发条件在前、读取命令在后，命令前用 → 显式分隔
         # 不用 markdown 表格——之前实测 agent 会把表格里 `skills/xxx/SKILL.md` 截成 `SKILL.md` 调用失败
         # 用相对路径 skills/<name>/SKILL.md：路径短不易被截断；cwd=temp 也能读到——
         #   ga.py 的 _get_abs_path 已加仓库根回退兜底（temp/skills 不存在时回退到 <repo>/skills）。
-        rel_fp = f"skills/{name}/SKILL.md"
-        rows.append(f"- **触发**：{trigger}\n  **匹配后读取** → `file_read path=\"{rel_fp}\"`")
+        rel_fp = record["path"]
+        rows.append(f"- **{record['name']} · 触发**：{record['description']}\n"
+                    f"  **匹配后读取** → `file_read path=\"{rel_fp}\"`")
+        if record.get("entrypoint"):
+            entrypoint = str(Path(script_dir) / record["entrypoint"])
+            rows.append(f"  **独立执行入口**：`{entrypoint}`（按该 Skill 的调用合同执行）")
+        if record.get("requirements"):
+            rows.append(f"  **依赖声明**：`{record['requirements']}`（按需安装）")
     if not rows:
         return ''
     header = (
@@ -209,9 +184,12 @@ class GenericAgent:
         self.stop_sig = True
         if self.handler is not None: self.handler.code_stop_signal.append(1)
             
-    def put_task(self, query, source="user", images=None):
+    def put_task(self, query, source="user", images=None, project_id=None):
         display_queue = queue.Queue()
-        self.task_queue.put({"query": query, "source": source, "images": images or [], "output": display_queue})
+        self.task_queue.put({
+            "query": query, "source": source, "images": images or [],
+            "output": display_queue, "project_id": project_id,
+        })
         return display_queue
 
     # i know it is dangerous, but raw_query is dangerous enough it doesn't enlarge
@@ -244,16 +222,28 @@ class GenericAgent:
             sys_prompt = get_system_prompt() + getattr(self.llmclient.backend, 'extra_sys_prompt', '')
             try:
                 from film import workspace as film_workspace
-                active_pid = film_workspace.get_active_project()
+                active_pid = task.get("project_id") or film_workspace.get_active_project()
+                if task.get("project_id"):
+                    film_workspace.set_active_project(active_pid)
                 if active_pid:
                     active_manifest = film_workspace.read_manifest(active_pid)
+                    from film import video_models as film_video_models
+                    video_profile = film_video_models.resolve_manifest(
+                        active_manifest)
                     sys_prompt += (
                         "\n[Active Film Project]\n"
                         f"- project_id: {active_pid}\n"
                         f"- brief: {active_manifest.get('brief', '')}\n"
                         f"- project_dir: {film_workspace.project_dir(active_pid)}\n"
+                        f"- execution_mode: "
+                        f"{film_workspace.execution_state_from_manifest(active_manifest).get('mode')}\n"
+                        f"- video_model: {video_profile.model_id}\n"
+                        f"- video_capabilities: "
+                        f"{film_video_models.prompt_summary(video_profile)}\n"
                         "该项目已由 Studio 或项目工具显式选定。直接在此项目内继续工作；"
-                        "不要再次调用 project_create，除非用户明确要求另开一部影片。\n"
+                        "不要再次调用 project_create，除非用户明确要求另开一部影片。"
+                        "执行模式只认 manifest.execution_mode；autonomous 在机器校验通过后自动推进，"
+                        "human_gated 在规定关键闸门等待用户确认。\n"
                     )
             except Exception as e:
                 print(f'[WARN] 活跃项目上下文注入失败: {e}')
@@ -262,6 +252,8 @@ class GenericAgent:
             try:
                 from film.tools import inject_film_tools
                 inject_film_tools(handler)
+                if task.get("project_id"):
+                    handler._film_active_project = task["project_id"]
             except Exception as e:
                 print(f'[WARN] film tools 注入失败: {e}')
             if self.handler and 'key_info' in self.handler.working: 
@@ -314,9 +306,28 @@ if __name__ == '__main__':
     parser.add_argument('--nobg', action='store_true')
     parser.add_argument('--no-studio', action='store_true', help='交互模式下不启动本地 Studio 网页')
     parser.add_argument('--open-studio', action='store_true', help='启动后自动在浏览器打开 Studio')
-    parser.add_argument('--studio-port', type=int, default=8764, help='Studio 本地端口，默认 8764')
+    parser.add_argument(
+        '--studio-host',
+        default=None,
+        help='Studio 监听地址；非回环地址还需显式启用远程风险开关',
+    )
+    parser.add_argument('--studio-port', type=int, default=None, help='Studio 端口；默认读取配置或 8764')
+    parser.add_argument('--studio-public-url', default=None, help='Studio 对外访问 URL（可含反向代理前缀）')
+    parser.add_argument('--canvas-host', default=None, help='画布监听地址；默认 127.0.0.1')
+    parser.add_argument('--canvas-port', type=int, default=None, help='画布端口；默认读取配置或 8765')
+    parser.add_argument('--canvas-public-url', default=None, help='画布对外 URL；可含前缀或 canvas.html')
     args, _unknown = parser.parse_known_args()
     _reflect_args = dict(zip([k.lstrip('-') for k in _unknown[::2]], _unknown[1::2])) if _unknown else {}
+    from film.server_config import configure_server_overrides, resolve_server_settings
+    configure_server_overrides(
+        studio=dict(host=args.studio_host, port=args.studio_port, public_url=args.studio_public_url),
+        canvas=dict(host=args.canvas_host, port=args.canvas_port, public_url=args.canvas_public_url),
+    )
+    try:
+        resolve_server_settings("studio")
+        resolve_server_settings("canvas")
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.task and not args.nobg:
         import subprocess, platform
@@ -408,7 +419,9 @@ if __name__ == '__main__':
         if not args.no_studio:
             try:
                 from film.studio import start_studio_server
-                studio = start_studio_server(agent, port=args.studio_port)
+                studio = start_studio_server(
+                    agent,
+                )
                 if studio:
                     print(f'\n\x1b[92m● VibeFilming Studio\x1b[0m {studio["url"]}  '
                           f'\x1b[90m(左侧对话 · 右侧实时画布)\x1b[0m\n', flush=True)

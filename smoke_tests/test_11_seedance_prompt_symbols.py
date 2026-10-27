@@ -72,17 +72,22 @@ def main():
         prompt,
         reference_images=None,
         reference_video_url=None,
+        reference_video_urls=None,
+        reference_audio_urls=None,
         duration=None,
         generate_audio=True,
         resolution="720p",
         ratio="16:9",
         seed=None,
+        **kwargs,
     ):
         captured.update(
             {
                 "prompt": prompt,
                 "reference_images": reference_images,
                 "reference_video_url": reference_video_url,
+                "reference_video_urls": reference_video_urls,
+                "reference_audio_urls": reference_audio_urls,
                 "duration": duration,
                 "generate_audio": generate_audio,
                 "resolution": resolution,
@@ -114,6 +119,7 @@ def main():
             {
                 "prompt": sample_prompt,
                 "name": "dry_run_seedance_symbols",
+                "unit_id": "dry_run_seedance_symbols",
                 "duration": 8,
                 "ratio": "16:9",
             },
@@ -131,6 +137,7 @@ def main():
                 {
                     "prompt": "角色开口说 {测试对白}",
                     "name": "dry_run_bad_audio_flag",
+                    "unit_id": "dry_run_bad_audio_flag",
                     "duration": 5,
                     "ratio": "16:9",
                     "generate_audio": False,

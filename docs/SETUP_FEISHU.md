@@ -174,6 +174,11 @@ def handle(data):
 }
 ```
 
+当前飞书前端复用单例 Agent 和项目上下文，因此 `allowed_users` 默认必须且只能
+配置一个 `open_id`。空数组不会开放公共访问，`"*"` 和多个用户会被启动门禁拒绝。
+只有明确接受跨用户上下文风险时，才可设置
+`VIBEFILMING_ALLOW_SHARED_FEISHU_AGENT=1`；生产环境不要启用该开关。
+
 ### 确认 LLM 配置
 
 确保同一个 `vibefilming.config.json` 中已配置 VibeFilming 必填的 ARK API Key：

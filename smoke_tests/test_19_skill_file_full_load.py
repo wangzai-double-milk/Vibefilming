@@ -58,17 +58,17 @@ def main():
     r = _simulate_do_file_read("skills/skill_director/SKILL.md", tool_num=6)
     for section in [
         "## 执行合同", "## 每次执行只做这 5 步", "## `director_plan` 最低合同",
-        "## 硬门禁", "## 共用故障标签", "## 按需读取详细手册",
+        "## 游戏编导重点", "## 硬门禁", "## 最终回报",
     ]:
         _assert(section in r, f"skill_director 缺章节 {section}（被截断了）")
-    for word in ["故事板", "route map", "references/handbook.md"]:
+    for word in ["设计锚点", "空环境图", "局部灯光"]:
         _assert(word in r, f"故事板红线词 {word} 没进上下文")
     _assert("[omitted long content]" not in r, "skill 仍被掐头去尾 omit 中段")
     ok(f"skill_director 短合同整篇加载（{len(r)} 字符）")
 
     # 4) skill_prompt_engineering 的调用合同与符号规则整篇在
     r2 = _simulate_do_file_read("skills/skill_prompt_engineering/SKILL.md", tool_num=6)
-    for word in ["Seedance 特殊符号", "{逐字台词}", "参考绑定表", "references/handbook.md"]:
+    for word in ["Seedance 特殊符号", "{逐字台词}", "参考素材", "调用前硬门禁"]:
         _assert(word in r2, f"PE 核心规则 {word} 没进上下文")
     _assert("[omitted long content]" not in r2, "PE 仍被 omit 中段")
     ok(f"skill_prompt_engineering 短合同整篇加载（{len(r2)} 字符）")
@@ -92,7 +92,7 @@ def main():
         llmcore.compress_history_tags._cd = old_cd
     compressed = messages[0]["content"][0]["content"]
     _assert("...[Truncated]..." not in compressed, "skill 正文被历史压缩掐中段了（豁免失效）")
-    for word in ["## 执行合同", "## 硬门禁", "## 按需读取详细手册", "references/handbook.md"]:
+    for word in ["## 执行合同", "## 游戏编导重点", "## 硬门禁", "## 最终回报"]:
         _assert(word in compressed, f"历史压缩后红线/章节 {word} 丢失")
     _assert(len(compressed) == len(skill_body), "skill 正文长度被历史压缩改变（应原样保留）")
     ok(f"历史压缩出口：skill 正文整篇保留（{len(compressed)} 字符），红线全在")

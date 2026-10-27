@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import threading
 import time
 import webbrowser
+import bleach
+import mistune
 from dataclasses import dataclass, field
 from html import escape
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -20,24 +23,33 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from . import artifact_contracts
 from . import workspace as ws
+from .server_config import (
+    bind_http_server,
+    require_explicit_remote_bind,
+    resolve_server_settings,
+)
 
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv"}
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-
-STAGES = [
-    ("story", "剧本"),
-    ("plan", "编导方案"),
-    ("assets", "参考资产"),
-    ("storyboard", "故事板"),
-    ("video", "视频段"),
-    ("review", "审查"),
-    ("compose", "合成成片"),
-]
-
+MARKDOWN_MAX_BYTES = 2 * 1024 * 1024
+_MARKDOWN = mistune.create_markdown(
+    escape=False,
+    plugins=["table", "strikethrough", "task_lists", "url"],
+)
+_MARKDOWN_TAGS = {
+    "a", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4",
+    "h5", "h6", "hr", "input", "li", "ol", "p", "pre", "strong", "table",
+    "tbody", "td", "th", "thead", "tr", "ul",
+}
+_MARKDOWN_ATTRIBUTES = {
+    "a": ["href", "title"],
+    "input": ["checked", "disabled", "type"],
+}
 
 @dataclass
 class Node:
@@ -244,24 +256,107 @@ def full_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def markdown_artifact_meta(path: Path) -> dict[str, Any]:
+    """Render a local Markdown artifact for the canvas using an escaped, sanitized parser."""
+    try:
+        stat = path.stat()
+        if stat.st_size > MARKDOWN_MAX_BYTES:
+            return {
+                "artifact_format": "markdown",
+                "artifact_revision": f"{stat.st_mtime_ns}:{stat.st_size}",
+                "artifact_error": f"Markdown 文件超过 {MARKDOWN_MAX_BYTES // 1024 // 1024}MB，改为原文按需读取",
+            }
+        source = path.read_text(encoding="utf-8", errors="replace")
+        rendered = _MARKDOWN(source)
+        safe_html = bleach.clean(
+            rendered,
+            tags=_MARKDOWN_TAGS,
+            attributes=_MARKDOWN_ATTRIBUTES,
+            protocols={"http", "https", "mailto"},
+            strip=True,
+        )
+        return {
+            "artifact_format": "markdown",
+            "artifact_html": safe_html,
+            "artifact_revision": f"{stat.st_mtime_ns}:{stat.st_size}",
+        }
+    except OSError as exc:
+        return {"artifact_format": "markdown", "artifact_error": str(exc)}
+
+
 def build_graph(project_dir: Path) -> dict[str, Any]:
     project_dir = project_dir.resolve()
     builder = GraphBuilder(project_dir)
     manifest = read_json(project_dir / "manifest.json")
-    plan = read_json(project_dir / "director_plan.json")
+    plan_path = project_dir / "director_plan.json"
+    plan = read_json(plan_path)
+    if plan_path.is_file():
+        artifact_contracts.validate(plan_path, plan)
     tool_calls = read_jsonl(project_dir / "logs" / "tool_calls.jsonl")
+
+    # ===== 拆镜列（写剧本之前的第一步）：参考视频 + 逆向拆镜产物 =====
+    breakdown_phase = (manifest.get("phases") or {}).get("breakdown") or {}
+    breakdown_json = project_dir / "materials" / "reference_breakdown.json"
+    breakdown_data = read_json(breakdown_json)
+    if breakdown_json.is_file():
+        artifact_contracts.validate(breakdown_json, breakdown_data)
+    breakdown_id: str | None = None
+    ref_videos = [
+        p for p in ((manifest.get("materials") or {}).get("reference_video") or [])
+        if Path(p).is_file()
+    ]
+    for video_path in ref_videos:
+        video = Path(video_path)
+        builder.add_node(
+            "reference_video",
+            "breakdown",
+            video.stem,
+            path=video,
+            status="done",
+            subtitle="参考视频",
+        )
+    # 前端只暴露一张「拆片表.md」卡片：分镜表 JSON、原始分镜表、脚本草稿等中间产物
+    # 仍落盘供工具链读取，但不再作为画布节点展示，避免拆镜后堆一列冗余卡片。
+    breakdown_table = project_dir / "materials" / "拆片表.md"
+    if breakdown_table.is_file():
+        mode_text = breakdown_data.get("mode") or breakdown_phase.get("mode") or ""
+        mode_label = {"imitate": "仿写", "fission": "裂变"}.get(mode_text, mode_text)
+        segments_count = breakdown_data.get("segments_count", 0)
+        breakdown_id = builder.add_node(
+            "breakdown_table",
+            "breakdown",
+            "拆片表",
+            path=breakdown_table,
+            status=breakdown_phase.get("status", "done"),
+            subtitle=f"{segments_count} 段 · 模式：{mode_label or '待定'}",
+            meta={**markdown_artifact_meta(breakdown_table), "mode": mode_text},
+        )
+    if not breakdown_table.is_file() and ref_videos:
+        # 上传了参考视频但还没拆镜：流程第一步待执行
+        builder.add_node(
+            "breakdown_todo",
+            "breakdown",
+            "等待多模态拆镜",
+            status="missing",
+            subtitle="上传参考视频后第一步逆向拆镜",
+            key="breakdown_todo",
+        )
 
     script_id = None
     if (project_dir / "script.md").exists():
+        script_path = project_dir / "script.md"
         phase = manifest.get("phases", {}).get("story", {})
         script_id = builder.add_node(
             "script",
             "story",
             "script.md",
-            path=project_dir / "script.md",
+            path=script_path,
             status=phase.get("status", "done"),
             subtitle=short_text(manifest.get("brief", "")),
+            meta=markdown_artifact_meta(script_path),
         )
+    if script_id and breakdown_id:
+        builder.add_edge(breakdown_id, script_id, "基于拆镜写剧本")
 
     plan_id = None
     if (project_dir / "director_plan.json").exists():
@@ -279,14 +374,23 @@ def build_graph(project_dir: Path) -> dict[str, Any]:
         builder.add_edge(script_id, plan_id, "编导转译")
 
     segment_ids: dict[str, str] = {}
+    segment_video_paths: dict[str, list[str]] = {}
     for seg in plan.get("segments", []) if isinstance(plan.get("segments"), list) else []:
         seg_key = str(seg.get("id") or seg.get("title") or len(segment_ids) + 1)
-        title = f"{seg_key} · {seg.get('title') or seg.get('summary') or '未命名片段'}"
+        title = str(seg.get("title") or seg.get("summary") or f"片段 {len(segment_ids) + 1}")
+        versions = seg.get("versions") if isinstance(seg.get("versions"), list) else []
+        adopted_files = [
+            str(version.get("file"))
+            for version in versions
+            if isinstance(version, dict) and version.get("adopted") and version.get("file")
+        ]
+        adopted_exists = any(
+            (project_dir / path).is_file() for path in adopted_files)
         sid = builder.add_node(
             "segment",
             "plan",
             title,
-            status=str(seg.get("status") or "planned"),
+            status=str(seg.get("status") or ("done" if adopted_exists else "planned")),
             subtitle=f"{seg.get('duration', '?')}s · {seg.get('scene') or ''}",
             meta={
                 "start_time": seg.get("start_time"),
@@ -297,6 +401,7 @@ def build_graph(project_dir: Path) -> dict[str, Any]:
             key=seg_key,
         )
         segment_ids[seg_key.lower()] = sid
+        segment_video_paths[seg_key.lower()] = adopted_files
         builder.add_edge(plan_id, sid, "segment")
 
     for subdir, stage, kind in [
@@ -345,9 +450,20 @@ def build_graph(project_dir: Path) -> dict[str, Any]:
             )
 
     apply_tool_edges(builder, tool_calls, plan_id)
-    add_missing_segment_placeholders(builder, project_dir, segment_ids)
+    add_missing_segment_placeholders(
+        builder, project_dir, segment_ids,
+        segment_video_paths=segment_video_paths,
+        phases=manifest.get("phases") or {},
+    )
 
     phases = manifest.get("phases", {})
+    phase_definitions = ws.workflow_phase_definitions(manifest)
+    stages = ws.canvas_stage_definitions(manifest)
+    known_stages = {stage["id"] for stage in stages}
+    for node in builder.nodes.values():
+        if node.stage not in known_stages:
+            stages.append({"id": node.stage, "label": node.stage})
+            known_stages.add(node.stage)
     stats = {
         "nodes": len(builder.nodes),
         "edges": len(builder.edges),
@@ -356,16 +472,27 @@ def build_graph(project_dir: Path) -> dict[str, Any]:
         "videos": sum(1 for n in builder.nodes.values() if n.kind == "video"),
         "reviews": sum(1 for n in builder.nodes.values() if n.kind == "review"),
         "composed": sum(1 for n in builder.nodes.values() if n.kind == "composed"),
+        # 工具调用耗时合计（有 duration_s 的调用累加），供状态条展示总执行耗时
+        "total_call_duration_s": round(sum(
+            float(c.get("duration_s") or 0)
+            for c in tool_calls
+            if isinstance(c.get("duration_s"), (int, float))
+        ), 1),
     }
     return {
         "project": {
             "id": manifest.get("project_id") or project_dir.name,
             "brief": manifest.get("brief") or plan.get("project") or project_dir.name,
             "dir": str(project_dir),
+            "execution_mode": ws.execution_state_from_manifest(manifest),
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
-        "stages": [{"id": sid, "title": title} for sid, title in STAGES],
+        "stages": [
+            {"id": item["id"], "title": item.get("label") or item["id"]}
+            for item in stages
+        ],
         "phases": phases,
+        "phase_definitions": phase_definitions,
         "budget": manifest.get("budget", {}),
         "stats": stats,
         "warnings": builder.warnings,
@@ -378,6 +505,7 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
     for call in calls:
         tool = call.get("tool")
         args = call.get("args") or {}
+        call_duration = call.get("duration_s")
         if tool == "gen_image":
             category = args.get("category") or "shot"
             name = args.get("name") or "image"
@@ -392,6 +520,7 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
                     "prompt": short_text(args.get("prompt", "")),
                     "prompt_full": full_text(args.get("prompt", "")),
                     "reference_images": [builder.rel(r) or str(r) for r in (args.get("reference_images") or [])],
+                    "call_duration_s": call_duration,
                 },
             )
             refs = args.get("reference_images") or []
@@ -424,6 +553,7 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
                     "duration": args.get("duration"),
                     "ratio": args.get("ratio"),
                     "reference_images": [builder.rel(r) or str(r) for r in (args.get("reference_images") or [])],
+                    "call_duration_s": call_duration,
                 },
             )
             refs = args.get("reference_images") or []
@@ -452,6 +582,7 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
                 "question": short_text(args.get("question", ""), 260),
                 "question_full": full_text(args.get("question", "")),
                 "targets": targets_rel,
+                "call_duration_s": call_duration,
             }
             if review_path.exists():
                 verdict = review_result_text(read_json(review_path))
@@ -507,9 +638,14 @@ def apply_tool_edges(builder: GraphBuilder, calls: list[dict[str, Any]], plan_id
                 builder.add_edge(src_id, out_id, "拼接")
 
 
-def add_missing_segment_placeholders(builder: GraphBuilder, project_dir: Path, segment_ids: dict[str, str]):
+def add_missing_segment_placeholders(
+        builder: GraphBuilder, project_dir: Path, segment_ids: dict[str, str],
+        *, segment_video_paths: dict[str, list[str]] | None = None,
+        phases: dict[str, Any] | None = None):
     if not segment_ids:
         return
+    segment_video_paths = segment_video_paths or {}
+    phases = phases or {}
     storyboard_files = [p.name.lower() for p in (project_dir / "shots").glob("storyboard*") if p.is_file()]
     video_files = [p.name.lower() for p in (project_dir / "shots").glob("*.mp4") if p.is_file()]
     running_video_nodes = [
@@ -520,32 +656,37 @@ def add_missing_segment_placeholders(builder: GraphBuilder, project_dir: Path, s
     for seg_key, seg_id in segment_ids.items():
         variants = segment_key_variants(seg_key)
         has_storyboard = any(any(v in name for v in variants) for name in storyboard_files)
-        matched_video_ids = [
+        matched_video_ids = {
             node.id
             for node in running_video_nodes
             if any(v in " ".join([node.title, node.path or ""]).lower() for v in variants)
-        ]
+        }
+        for planned_path in segment_video_paths.get(seg_key, []):
+            planned_id = builder.id_for_path(planned_path)
+            if planned_id:
+                matched_video_ids.add(planned_id)
         has_video = any(any(v in name for v in variants) for name in video_files) or bool(matched_video_ids)
-        if not has_storyboard:
+        segment_title = builder.nodes[seg_id].title
+        if not has_storyboard and (phases.get("asset") or {}).get("status") != "done":
             missing_id = builder.add_node(
                 "missing_storyboard",
                 "storyboard",
-                f"{seg_key} 故事板待生成",
+                f"{segment_title}：故事板待生成",
                 status="missing",
-                subtitle="planned from director_plan",
+                subtitle="来自编导方案的待办",
                 key=f"{seg_key}:missing_storyboard",
             )
             builder.add_edge(seg_id, missing_id, "待生成")
-        for video_id in matched_video_ids:
+        for video_id in sorted(matched_video_ids):
             status = builder.nodes[video_id].status
             builder.add_edge(seg_id, video_id, "生成中" if status in {"running", "in_progress"} else "已生成")
-        if not has_video:
+        if not has_video and (phases.get("animate") or {}).get("status") != "done":
             missing_id = builder.add_node(
                 "missing_video",
                 "video",
-                f"{seg_key} 视频待生成",
+                f"{segment_title}：视频待生成",
                 status="missing",
-                subtitle="planned from director_plan",
+                subtitle="来自编导方案的待办",
                 key=f"{seg_key}:missing_video",
             )
             builder.add_edge(seg_id, missing_id, "待生成")
@@ -582,7 +723,7 @@ def render_html(graph: dict[str, Any]) -> str:
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{escape(graph["project"]["brief"])} · Workflow Canvas</title>
+  <title>{escape(graph["project"]["brief"])} · 工作流画布</title>
   <style>
     :root {{
       --bg: #0b0d10;
@@ -733,7 +874,7 @@ def render_html(graph: dict[str, Any]) -> str:
     }}
     .columns {{
       display: grid;
-      grid-template-columns: repeat(7, 220px);
+      grid-template-columns: repeat(8, 220px);
       gap: 22px;
       align-items: start;
       position: relative;
@@ -850,8 +991,8 @@ def render_html(graph: dict[str, Any]) -> str:
       top: 0;
       right: 0;
       height: 100vh;
-      width: 460px;
-      max-width: 92vw;
+      width: min(860px, 94vw);
+      max-width: 94vw;
       background: rgba(14, 17, 21, .98);
       border-left: 1px solid rgba(214,166,79,.28);
       box-shadow: -24px 0 60px rgba(0,0,0,.5);
@@ -948,6 +1089,66 @@ def render_html(graph: dict[str, Any]) -> str:
       white-space: pre-wrap;
       tab-size: 2;
     }}
+    .markdown-content {{
+      max-height: 68vh;
+      min-height: 120px;
+      overflow: auto;
+      padding: 18px 20px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px;
+      background: rgba(255,255,255,.035);
+      color: #e8e2d8;
+      font-size: 13px;
+      line-height: 1.7;
+    }}
+    .markdown-content h1, .markdown-content h2, .markdown-content h3 {{
+      margin: 1.35em 0 .65em;
+      color: var(--text);
+      line-height: 1.35;
+    }}
+    .markdown-content h1:first-child, .markdown-content h2:first-child {{
+      margin-top: 0;
+    }}
+    .markdown-content h1 {{ font-size: 21px; }}
+    .markdown-content h2 {{ font-size: 17px; }}
+    .markdown-content h3 {{ font-size: 14px; }}
+    .markdown-content p {{ margin: .65em 0; }}
+    .markdown-content ul, .markdown-content ol {{ padding-left: 1.6em; }}
+    .markdown-content blockquote {{
+      margin: 12px 0; padding: 8px 12px;
+      border-left: 3px solid var(--gold); color: #c7c0b4;
+      background: rgba(214,166,79,.06);
+    }}
+    .markdown-content table {{
+      width: max-content;
+      min-width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+      line-height: 1.5;
+    }}
+    .markdown-content th, .markdown-content td {{
+      min-width: 88px;
+      padding: 8px 9px;
+      border: 1px solid rgba(255,255,255,.12);
+      text-align: left;
+      vertical-align: top;
+      white-space: normal;
+    }}
+    .markdown-content th {{
+      position: sticky; top: 0; z-index: 1;
+      color: var(--gold); background: #171b20;
+    }}
+    .markdown-content code {{
+      padding: 1px 4px; border-radius: 4px;
+      background: rgba(255,255,255,.08);
+      font-family: "SFMono-Regular", ui-monospace, Menlo, monospace;
+    }}
+    .markdown-content pre {{
+      overflow-x: auto; padding: 12px; border-radius: 8px;
+      background: #0b0d10;
+    }}
+    .markdown-content pre code {{ padding: 0; background: transparent; }}
+    .markdown-content a {{ color: #8db5ff; }}
     .ref-item {{
       display: flex;
       gap: 10px;
@@ -1033,7 +1234,7 @@ def render_html(graph: dict[str, Any]) -> str:
     <div id="drawer-body" class="drawer-body"></div>
   </aside>
   <header>
-    <div class="eyebrow">VibeFilming Workflow Canvas</div>
+    <div class="eyebrow">VibeFilming 工作流画布</div>
     <h1>{escape(graph["project"]["brief"])}</h1>
     <div id="phases" class="topline"></div>
     <div class="toolbar">
@@ -1052,6 +1253,7 @@ def render_html(graph: dict[str, Any]) -> str:
     let graph = JSON.parse(document.getElementById('graph-data').textContent);
     let connected = new Map();
     let graphSignature = "";
+    let graphInFlight = false;
     const POLL_MS = 2000;
     const columnsEl = document.getElementById('columns');
     const edgesEl = document.getElementById('edges');
@@ -1062,9 +1264,12 @@ def render_html(graph: dict[str, Any]) -> str:
 
     function graphDigest(data) {{
       return JSON.stringify({{
+        project: data.project && data.project.id,
+        stages: data.stages || [],
+        phase_definitions: data.phase_definitions || [],
         stats: data.stats || {{}},
         phases: data.phases || {{}},
-        nodes: (data.nodes || []).map(n => [n.id, n.kind, n.stage, n.status, n.path, n.title]),
+        nodes: data.nodes || [],
         edges: (data.edges || []).map(e => [e.source, e.target, e.label, e.kind]),
       }});
     }}
@@ -1089,53 +1294,115 @@ def render_html(graph: dict[str, Any]) -> str:
       return 'status-' + String(status || 'unknown').replace(/[^a-zA-Z0-9_-]/g, '_');
     }}
 
+    function statusLabel(status) {{
+      return escapeHtml({{
+        pending: '待开始', planned: '已规划', missing: '待生成',
+        running: '进行中', in_progress: '进行中', done: '已完成',
+        succeeded: '已完成', failed: '失败', error: '异常',
+        blocked: '待处理', approved: '已确认', auto_approved: '自动通过'
+      }}[status] || status || '未知');
+    }}
+
     function kindLabel(kind) {{
       return {{
-        script: 'SCRIPT', director_plan: 'PLAN', segment: 'SEGMENT',
-        asset: 'ASSET', storyboard: 'BOARD', video: 'VIDEO',
-        review: 'REVIEW', composed: 'COMPOSED',
-        missing_storyboard: 'TODO', missing_video: 'TODO', reference: 'REF'
-      }}[kind] || kind.toUpperCase();
+        script: '剧本', director_plan: '编导方案', segment: '片段',
+        asset: '资产', storyboard: '故事板', video: '视频',
+        review: '审片', composed: '成片',
+        breakdown: '拆镜', breakdown_md: '拆镜文档',
+        breakdown_table: '拆片表', breakdown_script: '剧本草稿',
+        breakdown_todo: '待办', reference_video: '参考片',
+        missing_storyboard: '待办', missing_video: '待办', reference: '参考'
+      }}[kind] || escapeHtml(kind);
     }}
 
     function isImage(path) {{ return /\\.(png|jpg|jpeg|webp|gif)$/i.test(path || ''); }}
     function isVideo(path) {{ return /\\.(mp4|mov|webm|mkv)$/i.test(path || ''); }}
+    function isMarkdown(path) {{ return /\\.md$/i.test(path || ''); }}
+    function isTextArtifact(path) {{ return /\\.(md|json|txt|csv|srt)$/i.test(path || ''); }}
+
+    function fmtDur(sec) {{
+      if (sec == null || isNaN(sec)) return '';
+      if (sec < 60) return (Math.round(sec * 10) / 10) + 's';
+      if (sec < 3600) return (sec / 60).toFixed(1) + 'm';
+      return (sec / 3600).toFixed(1) + 'h';
+    }}
 
     function renderPhases() {{
       const phases = graph.phases || {{}};
-      const order = ['story','entity','asset','animate','compose','review'];
+      const configured = graph.phase_definitions || [];
+      const known = new Set(configured.map(item => item.id));
+      const definitions = configured.concat(
+        Object.keys(phases).filter(key => !known.has(key)).map(key => ({{id: key, label: key}}))
+      );
       const stats = graph.stats || {{nodes: 0, edges: 0}};
-      const generatedAt = graph.project && graph.project.generated_at ? ` · updated ${{graph.project.generated_at}}` : '';
-      document.getElementById('phases').innerHTML = order.map(key => {{
+      const generatedAt = graph.project && graph.project.generated_at ? ` · 更新于 ${{escapeHtml(graph.project.generated_at)}}` : '';
+      const executionMode = graph.project && graph.project.execution_mode;
+      const modeText = executionMode && executionMode.label ? ` · ${{executionMode.label}}` : '';
+      document.getElementById('phases').innerHTML = definitions.map(item => {{
+        const key = item.id;
         const phase = phases[key] || {{}};
         const status = phase.status || 'pending';
-        return `<span class="phase ${{status}}"><span class="dot"></span>${{key}} · ${{status}}</span>`;
-      }}).join('') + `<span>${{stats.nodes}} nodes / ${{stats.edges}} edges${{generatedAt}}</span>`;
+        const dur = fmtDur(phase.duration_s);
+        const durText = dur ? ` ⏱${{dur}}` : '';
+        return `<span class="phase ${{status}}" title="${{escapeHtml(phase.note || '')}}"><span class="dot"></span>${{escapeHtml(item.label || key)}} · ${{statusLabel(status)}}${{durText}}</span>`;
+      }}).join('') + `<span>${{stats.nodes}} 个节点 / ${{stats.edges}} 条连线 · 工具总耗时 ⏱${{fmtDur(stats.total_call_duration_s) || '0s'}}${{modeText}}${{generatedAt}}</span>`;
+    }}
+
+    // Keep unchanged DOM nodes attached so polling does not restart media.
+    function syncChildren(parent, children) {{
+      const keep = new Set(children);
+      Array.from(parent.children).forEach(child => {{
+        if (!keep.has(child)) child.remove();
+      }});
+      children.forEach((child, index) => {{
+        const current = parent.children[index];
+        if (current !== child) parent.insertBefore(child, current || null);
+      }});
+    }}
+
+    function cardSignature(node) {{
+      return JSON.stringify([graph.project && graph.project.id, node]);
     }}
 
     function renderColumns() {{
-      columnsEl.innerHTML = '';
-      for (const stage of graph.stages || []) {{
-        const col = document.createElement('section');
+      const columns = new Map(Array.from(columnsEl.children).map(col => [col.dataset.stage, col]));
+      const stages = graph.stages || [];
+      const nextColumns = [];
+      // 按阶段数动态设列数，避免阶段增减时最后一列（如「合成成片」）换行
+      columnsEl.style.gridTemplateColumns = `repeat(${{stages.length}}, 220px)`;
+      for (const stage of stages) {{
+        const col = columns.get(stage.id) || document.createElement('section');
         col.className = 'col';
         col.dataset.stage = stage.id;
-        col.innerHTML = `<h2>${{stage.title}}</h2>`;
+        const heading = col.querySelector('h2') || document.createElement('h2');
+        if (heading.textContent !== stage.title) heading.textContent = stage.title;
+        const cards = new Map(Array.from(col.querySelectorAll('.card')).map(card => [card.dataset.id, card]));
+        const children = [heading];
         const nodes = (graph.nodes || []).filter(n => n.stage === stage.id);
         if (!nodes.length) {{
-          const empty = document.createElement('div');
+          const empty = col.querySelector('.empty') || document.createElement('div');
           empty.className = 'empty';
           empty.textContent = '暂无产物';
-          col.appendChild(empty);
+          children.push(empty);
         }}
-        for (const node of nodes) col.appendChild(renderCard(node));
-        columnsEl.appendChild(col);
+        for (const node of nodes) {{
+          const previous = cards.get(node.id);
+          children.push(previous && previous._signature === cardSignature(node) ? previous : renderCard(node));
+        }}
+        syncChildren(col, children);
+        nextColumns.push(col);
       }}
+      syncChildren(columnsEl, nextColumns);
     }}
 
     function renderCard(node) {{
       const card = document.createElement('article');
       card.className = 'card ' + (node.status === 'missing' ? 'missing' : '');
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-label', `打开${{node.title}}详情`);
       card.dataset.id = node.id;
+      card._signature = cardSignature(node);
       card.dataset.text = JSON.stringify(node).toLowerCase();
       if (node.path && isImage(node.path)) {{
         const img = document.createElement('img');
@@ -1154,8 +1421,10 @@ def render_html(graph: dict[str, Any]) -> str:
       }}
       const metaText = node.meta && (node.meta.prompt || node.meta.question)
         ? `<div class="meta">${{escapeHtml(node.meta.prompt || node.meta.question)}}</div>` : '';
+      const durText = node.meta && node.meta.call_duration_s != null
+        ? ` · ⏱${{fmtDur(node.meta.call_duration_s)}}` : '';
       card.insertAdjacentHTML('beforeend', `
-        <div class="kind"><span class="status-dot ${{statusClass(node.status)}}"></span>${{kindLabel(node.kind)}} · ${{node.status || 'unknown'}}</div>
+        <div class="kind"><span class="status-dot ${{statusClass(node.status)}}"></span>${{kindLabel(node.kind)}} · ${{statusLabel(node.status)}}${{durText}}</div>
         <div class="title">${{escapeHtml(node.title)}}</div>
         <div class="subtitle">${{escapeHtml(node.subtitle || node.path || '')}}</div>
         ${{metaText}}
@@ -1165,6 +1434,12 @@ def render_html(graph: dict[str, Any]) -> str:
       card.addEventListener('click', ev => {{
         if (ev.target.closest('video')) return;
         openDrawer(node.id);
+      }});
+      card.addEventListener('keydown', ev => {{
+        if (ev.key === 'Enter' || ev.key === ' ') {{
+          ev.preventDefault();
+          openDrawer(node.id);
+        }}
       }});
       return card;
     }}
@@ -1217,6 +1492,7 @@ def render_html(graph: dict[str, Any]) -> str:
     }}
 
     let activeDrawerId = null;
+    let drawerSignature = null;
     const overlayEl = document.getElementById('overlay');
     const drawerEl = document.getElementById('drawer');
     const drawerBody = document.getElementById('drawer-body');
@@ -1307,8 +1583,14 @@ def render_html(graph: dict[str, Any]) -> str:
       if (node.kind === 'review' && meta.conclusion) {{
         outputInner += `<div class="field"><div class="field-label">审查结论</div><div class="field-value mono">${{escapeHtml(meta.conclusion)}}</div></div>`;
       }}
-      if ((node.kind === 'script' || node.kind === 'director_plan') && node.path) {{
-        outputInner += `<div class="field"><div class="field-label">文件内容</div><pre class="field-value mono artifact-content" data-artifact-content>正在读取…</pre></div>`;
+      if (node.path && isTextArtifact(node.path)) {{
+        if (isMarkdown(node.path)) {{
+          const initial = meta.artifact_html
+            || escapeHtml(meta.artifact_error || '正在读取…');
+          outputInner += `<div class="field"><div class="field-label">Markdown 预览</div><div class="markdown-content" data-artifact-content>${{initial}}</div></div>`;
+        }} else {{
+          outputInner += `<div class="field"><div class="field-label">文件内容</div><pre class="field-value mono artifact-content" data-artifact-content>正在读取…</pre></div>`;
+        }}
       }}
       if (node.path) {{
         outputInner += `<div class="field"><div class="field-label">产物文件</div><div class="field-value">${{escapeHtml(node.path)}}</div></div>`;
@@ -1340,16 +1622,24 @@ def render_html(graph: dict[str, Any]) -> str:
     }}
 
     async function loadArtifactContent(node) {{
-      if (!node || !node.path || !['script', 'director_plan'].includes(node.kind)) return;
+      if (!node || !node.path || !isTextArtifact(node.path)) return;
       const target = drawerBody.querySelector('[data-artifact-content]');
       if (!target) return;
       const requestedId = node.id;
+      const meta = node.meta || {{}};
+      if (isMarkdown(node.path) && meta.artifact_html) {{
+        target.querySelectorAll('a[href]').forEach(link => {{
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+        }});
+        return;
+      }}
       try {{
         const joiner = node.path.includes('?') ? '&' : '?';
         const response = await fetch(encodeURI(node.path + joiner + 'ts=' + Date.now()), {{cache: 'no-store'}});
         if (!response.ok) throw new Error(`HTTP ${{response.status}}`);
         let content = await response.text();
-        if (node.kind === 'director_plan') {{
+        if (/\\.json$/i.test(node.path)) {{
           try {{ content = JSON.stringify(JSON.parse(content), null, 2); }} catch (_) {{}}
         }}
         if (activeDrawerId === requestedId && target.isConnected) target.textContent = content;
@@ -1363,11 +1653,18 @@ def render_html(graph: dict[str, Any]) -> str:
     function renderDrawer() {{
       const node = activeDrawerId ? nodeById(activeDrawerId) : null;
       if (!node) {{ closeDrawer(); return; }}
+      const bodyHtml = buildDrawer(node);
+      const signature = JSON.stringify([
+        graph.project && graph.project.id, node.id, node.kind, node.status,
+        node.title, node.path, node.meta && node.meta.artifact_revision, bodyHtml,
+      ]);
+      if (signature === drawerSignature) return;
+      drawerSignature = signature;
       document.getElementById('drawer-kind').innerHTML =
-        `<span class="status-dot ${{statusClass(node.status)}}"></span>${{kindLabel(node.kind)}} · ${{node.status || 'unknown'}}`;
+        `<span class="status-dot ${{statusClass(node.status)}}"></span>${{kindLabel(node.kind)}} · ${{statusLabel(node.status)}}`;
       document.getElementById('drawer-title').textContent = node.title;
       document.getElementById('drawer-path').textContent = node.path || '';
-      drawerBody.innerHTML = buildDrawer(node);
+      drawerBody.innerHTML = bodyHtml;
       wireMediaFallback(drawerBody);
       loadArtifactContent(node);
       drawerBody.querySelectorAll('[data-goto]').forEach(el => {{
@@ -1386,6 +1683,7 @@ def render_html(graph: dict[str, Any]) -> str:
 
     function closeDrawer() {{
       activeDrawerId = null;
+      drawerSignature = null;
       overlayEl.classList.remove('open');
       drawerEl.classList.remove('open');
       clearFocus();
@@ -1415,10 +1713,12 @@ def render_html(graph: dict[str, Any]) -> str:
     }}
 
     async function pollGraph() {{
+      if (graphInFlight) return;
       if (location.protocol === 'file:') {{
         setRefreshStatus('静态快照：用 --serve 开启实时刷新', 'warn');
         return;
       }}
+      graphInFlight = true;
       try {{
         const response = await fetch('workflow_graph.json?ts=' + Date.now(), {{cache: 'no-store'}});
         if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -1435,6 +1735,8 @@ def render_html(graph: dict[str, Any]) -> str:
         }}
       }} catch (err) {{
         setRefreshStatus('轮询失败：' + err.message, 'warn');
+      }} finally {{
+        graphInFlight = false;
       }}
     }}
 
@@ -1498,7 +1800,14 @@ def write_canvas(project_dir: Path, graph: dict[str, Any]) -> tuple[Path, Path]:
     return graph_path, html_path
 
 
-def canvas_launch_hint(project_dir: Path, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str, str]:
+def canvas_launch_hint(project_dir: Path, host: str | None = None, port: int | None = None) -> dict[str, str]:
+    if os.environ.get(
+        "VIBEFILMING_DISABLE_CANVAS", ""
+    ).strip().lower() in {"1", "true", "yes"}:
+        return {
+            "local_canvas_url": "",
+            "status": "看板 HTTP 服务已关闭；画布文件仍会生成并同步到共享存储。",
+        }
     # 优先尝试自动起一个常驻实时看板：成功就直接给可点开的链接，失败再回退到手动命令。
     live = ensure_live_server(project_dir, host=host, port=port)
     if live:
@@ -1506,10 +1815,12 @@ def canvas_launch_hint(project_dir: Path, host: str = DEFAULT_HOST, port: int = 
             "local_canvas_url": live["url"],
             "status": "实时看板已自动启动，直接在浏览器打开上面的链接即可（页面每 2 秒自动刷新进度）。",
         }
-    actual_host = "127.0.0.1" if host in ("", "0.0.0.0") else host
+    import shlex
+    settings = resolve_server_settings("canvas", host=host, port=port)
     return {
-        "local_canvas_url": f"http://{actual_host}:{port}/canvas.html",
-        "serve_command": f"python3 -m film.workflow_canvas {project_dir} --serve --port {port}",
+        "local_canvas_url": settings.browser_url(settings.port, "canvas.html"),
+        "serve_command": (f"python3 -m film.workflow_canvas {shlex.quote(str(project_dir))}"
+                          f" --serve --host {shlex.quote(settings.host)} --port {settings.port}"),
         "note": "自动启动实时看板失败，请手动运行 serve_command 再打开上面的链接。",
     }
 
@@ -1585,7 +1896,8 @@ class _LiveCanvasHandler(_ResilientHandlerMixin, SimpleHTTPRequestHandler):
         pass  # 静音 HTTP 访问日志，别污染 CLI 输出
 
 
-def ensure_live_server(project_dir: Path, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str, str] | None:
+def ensure_live_server(project_dir: Path, host: str | None = None, port: int | None = None,
+                       public_url: str | None = None) -> dict[str, str] | None:
     """幂等地保证有一个后台常驻画布服务，并把它指向 project_dir。
 
     - 首次调用：起一个守护线程 HTTP 服务（端口被占用则自动顺延最多 20 个端口）。
@@ -1593,6 +1905,8 @@ def ensure_live_server(project_dir: Path, host: str = DEFAULT_HOST, port: int = 
     - 起服务失败返回 None，交由调用方回退到手动命令提示。
     """
     project_dir = Path(project_dir)
+    settings = resolve_server_settings("canvas", host=host, port=port, public_url=public_url)
+    require_explicit_remote_bind("canvas", settings.host)
     with _LIVE_LOCK:
         try:
             refresh_canvas(project_dir)
@@ -1601,20 +1915,14 @@ def ensure_live_server(project_dir: Path, host: str = DEFAULT_HOST, port: int = 
         _LIVE_STATE["project_dir"] = str(project_dir)
         if _LIVE_STATE.get("server") is not None:
             return {"url": _LIVE_STATE["url"], "port": str(_LIVE_STATE["port"])}
-        actual_host = "127.0.0.1" if host in ("", "0.0.0.0") else host
-        server = None
-        for candidate in range(port, port + 20):
-            try:
-                server = ThreadingHTTPServer((host, candidate), _LiveCanvasHandler)
-                break
-            except OSError:
-                continue
-        if server is None:
+        try:
+            server = bind_http_server(settings, _LiveCanvasHandler)
+        except OSError:
             return None
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         bound_port = server.server_port
-        url = f"http://{actual_host}:{bound_port}/canvas.html"
+        url = settings.browser_url(bound_port, "canvas.html")
         _LIVE_STATE.update({"server": server, "thread": thread, "url": url, "port": bound_port})
         print(f"\n\x1b[92m● 实时工作流看板\x1b[0m {url}  \x1b[90m(浏览器打开，随进度自动刷新)\x1b[0m\n", flush=True)
         return {"url": url, "port": str(bound_port)}
@@ -1626,7 +1934,10 @@ def refresh_canvas(project_dir: Path) -> tuple[dict[str, Any], Path, Path]:
     return graph, graph_path, html_path
 
 
-def serve_canvas(project_dir: Path, host: str, port: int, open_browser: bool = False) -> int:
+def serve_canvas(project_dir: Path, host: str | None = None, port: int | None = None,
+                 open_browser: bool = False, public_url: str | None = None) -> int:
+    settings = resolve_server_settings("canvas", host=host, port=port, public_url=public_url)
+    require_explicit_remote_bind("canvas", settings.host)
     graph, graph_path, html_path = refresh_canvas(project_dir)
 
     class CanvasHandler(_ResilientHandlerMixin, SimpleHTTPRequestHandler):
@@ -1650,9 +1961,8 @@ def serve_canvas(project_dir: Path, host: str, port: int, open_browser: bool = F
             self.send_header("Pragma", "no-cache")
             return super().end_headers()
 
-    server = ThreadingHTTPServer((host, port), CanvasHandler)
-    actual_host = "127.0.0.1" if host in ("", "0.0.0.0") else host
-    url = f"http://{actual_host}:{server.server_port}/canvas.html"
+    server = bind_http_server(settings, CanvasHandler, fallback=False)
+    url = settings.browser_url(server.server_port, "canvas.html")
     print(f"\n实时工作流画布已启动：{url}", flush=True)
     print("保持这个命令运行，浏览器会自动轮询 workflow_graph.json 更新进度。\n", flush=True)
     print(json.dumps({
@@ -1679,13 +1989,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="生成或启动 VibeFilming 项目的只读工作流画布")
     parser.add_argument("project", help="项目 id 或项目目录路径")
     parser.add_argument("--serve", action="store_true", help="启动本地网站，页面自动轮询刷新")
-    parser.add_argument("--host", default=DEFAULT_HOST, help=f"本地服务监听地址，默认 {DEFAULT_HOST}")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"本地服务端口，默认 {DEFAULT_PORT}")
+    parser.add_argument("--host", default=None, help="监听地址；默认读取 server.canvas.host 或继承 Studio")
+    parser.add_argument("--port", type=int, default=None, help=f"端口；默认读取配置或 {DEFAULT_PORT}")
+    parser.add_argument("--public-url", default=None, help="浏览器访问的画布 URL")
     parser.add_argument("--open", action="store_true", help="启动后自动用默认浏览器打开")
     args = parser.parse_args(argv)
     project_dir = resolve_project(args.project)
     if args.serve:
-        return serve_canvas(project_dir, args.host, args.port, open_browser=args.open)
+        return serve_canvas(project_dir, args.host, args.port, open_browser=args.open,
+                            public_url=args.public_url)
     graph, graph_path, html_path = refresh_canvas(project_dir)
     print(json.dumps({
         "project": str(project_dir),

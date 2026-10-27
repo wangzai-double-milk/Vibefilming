@@ -12,6 +12,7 @@ from _common import ROOT, banner, ok, info
 sys.path.insert(0, str(ROOT))
 from film import film_sdk as sdk
 from film import tools
+from film import video_models
 
 
 def _assert(cond, msg):
@@ -43,11 +44,14 @@ def main():
         prompt,
         reference_images=None,
         reference_video_url=None,
+        reference_video_urls=None,
+        reference_audio_urls=None,
         duration=None,
         generate_audio=True,
         resolution="720p",
         ratio="16:9",
         seed=None,
+        **kwargs,
     ):
         captured_tool.update(
             {
@@ -72,14 +76,17 @@ def main():
 
     original_submit = tools.sdk.submit_video_task
     original_active_pid = tools._active_pid
+    original_video_profile = tools._video_profile
     tools.sdk.submit_video_task = fake_submit_video_task
     tools._active_pid = lambda handler: None
+    tools._video_profile = lambda handler=None: video_models.PROFILES["2.0"]
     try:
         result = tools._gen_video_t2v(
             object(),
             {
                 "prompt": "镜头1：城市天台夜景，固定机位，角色望向远方。无人物说话，无背景音乐，仅保留轻微风声。",
                 "name": "dry_run_seedance_4k",
+                "unit_id": "dry_run_seedance_4k",
                 "duration": 5,
                 "ratio": "16:9",
                 "resolution": "4k",
@@ -96,6 +103,7 @@ def main():
                 {
                     "prompt": "固定机位空镜，只有环境声。",
                     "name": "dry_run_bad_resolution",
+                    "unit_id": "dry_run_bad_resolution",
                     "duration": 5,
                     "ratio": "16:9",
                     "resolution": "2160p",
@@ -108,6 +116,7 @@ def main():
     finally:
         tools.sdk.submit_video_task = original_submit
         tools._active_pid = original_active_pid
+        tools._video_profile = original_video_profile
 
     captured_sdk = {}
 
@@ -118,7 +127,11 @@ def main():
         return {"id": "dry_run_sdk_4k"}
 
     original_http_post = sdk._http_post
+    original_available_profiles = sdk.video_models.available_profiles
     sdk._http_post = fake_http_post
+    sdk.video_models.available_profiles = lambda: [
+        video_models.PROFILES["2.0"],
+    ]
     try:
         response = sdk.submit_video_task(
             "镜头1：产品特写，缓慢推近，高清质感。",
@@ -126,6 +139,7 @@ def main():
             resolution="4k",
             ratio="16:9",
             generate_audio=True,
+            model="2.0",
         )
         _assert(response["task_id"] == "dry_run_sdk_4k", "SDK dry-run task_id 不正确")
         _assert(response["body"]["resolution"] == "4k", "SDK 返回 body 中 resolution 不是 4k")
@@ -139,6 +153,7 @@ def main():
                 duration=5,
                 resolution="2160p",
                 ratio="16:9",
+                model="2.0",
             )
             raise AssertionError("SDK 未拦截非法 resolution=2160p")
         except ValueError as e:
@@ -146,6 +161,7 @@ def main():
             ok("SDK 会拒绝未声明的 resolution 值")
     finally:
         sdk._http_post = original_http_post
+        sdk.video_models.available_profiles = original_available_profiles
 
     info("未提交真实 Seedance 任务；仅捕获本地请求体")
     return True

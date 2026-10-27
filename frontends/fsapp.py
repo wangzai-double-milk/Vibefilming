@@ -342,7 +342,22 @@ def _feishu_config():
     app_id = str(cfg.get("fs_app_id", "") or "").strip()
     app_secret = str(cfg.get("fs_app_secret", "") or "").strip()
     allowed = _to_allowed_set(cfg.get("fs_allowed_users", []))
-    return app_id, app_secret, allowed, (not allowed or "*" in allowed), path
+    return app_id, app_secret, allowed, ("*" in allowed), path
+
+
+def _validate_feishu_isolation(allowed, public_access):
+    shared_enabled = os.environ.get(
+        "VIBEFILMING_ALLOW_SHARED_FEISHU_AGENT", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if not public_access and len(allowed) == 1:
+        return
+    if shared_enabled:
+        return
+    raise RuntimeError(
+        "飞书前端使用单例 Agent 和项目上下文，默认只允许配置一个 "
+        "feishu.allowed_users 身份。空列表、'*' 或多个用户会产生跨用户上下文；"
+        "只有已接受该风险时才可设置 VIBEFILMING_ALLOW_SHARED_FEISHU_AGENT=1。"
+    )
 
 
 APP_ID, APP_SECRET, ALLOWED_USERS, PUBLIC_ACCESS, CONFIG_PATH = _feishu_config()
@@ -378,6 +393,11 @@ def _mask_secret(value):
 
 def check_config(init_agent=False):
     app_id, app_secret, allowed, public_access, path = _feishu_config()
+    isolation_error = ""
+    try:
+        _validate_feishu_isolation(allowed, public_access)
+    except RuntimeError as exc:
+        isolation_error = str(exc)
     result = {
         "config_path": path,
         "app_id": app_id,
@@ -385,7 +405,9 @@ def check_config(init_agent=False):
         "app_secret_present": bool(app_secret),
         "public_access": public_access,
         "allowed_users": sorted(allowed),
-        "ready": bool(app_id and app_secret),
+        "isolation_safe": not isolation_error,
+        "isolation_error": isolation_error,
+        "ready": bool(app_id and app_secret and not isolation_error),
     }
     if init_agent:
         try:
@@ -548,6 +570,36 @@ def _describe_media(msg_type, file_path, filename):
     return f"[{msg_type}]\n[File: source: {file_path}]"
 
 
+def _try_save_to_project_materials(file_path, msg_type):
+    """若有活跃项目，则把飞书临时素材归档到 projects/<pid>/materials/。
+
+    返回目标路径；无活跃项目/copy 失败则返回 None，temp/feishu_media/ 里的原件保持不变。
+    """
+    try:
+        from film import workspace as ws
+        pid = ws.get_active_project()
+        if not pid:
+            return None
+        if msg_type not in ("image", "video", "media", "file"):
+            return None
+        src = Path(file_path)
+        if not src.exists():
+            return None
+        target_dir = ws.project_dir(pid) / "materials"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        dst = target_dir / src.name
+        i = 1
+        while dst.exists():
+            dst = target_dir / f"{src.stem}_{i}{src.suffix}"
+            i += 1
+        import shutil
+        shutil.copy2(src, dst)
+        return str(dst)
+    except Exception as e:
+        print(f"[WARN] _try_save_to_project_materials 失败: {e}")
+        return None
+
+
 def _send_local_file(receive_id, file_path, receive_id_type="open_id"):
     if not os.path.isfile(file_path):
         send_message(receive_id, f"⚠️ 文件不存在: {file_path}", receive_id_type=receive_id_type)
@@ -590,6 +642,9 @@ def _build_user_message(message):
             file_path, filename = _download_and_save_media("image", {"image_key": image_key}, message_id)
             if file_path and filename:
                 parts.append(_describe_media("image", file_path, filename))
+                archived = _try_save_to_project_materials(file_path, "image")
+                if archived:
+                    parts.append(f"[Materials: saved to {archived}]")
                 image_paths.append(file_path)
             else:
                 parts.append("[image: download failed]")
@@ -597,6 +652,9 @@ def _build_user_message(message):
         file_path, filename = _download_and_save_media(msg_type, content_json, message_id)
         if file_path and filename:
             parts.append(_describe_media(msg_type, file_path, filename))
+            archived = _try_save_to_project_materials(file_path, msg_type)
+            if archived:
+                parts.append(f"[Materials: saved to {archived}]")
             if msg_type == "image":
                 image_paths.append(file_path)
         else:
@@ -845,6 +903,11 @@ def main():
     APP_ID, APP_SECRET, ALLOWED_USERS, PUBLIC_ACCESS, CONFIG_PATH = _feishu_config()
     if not APP_ID or not APP_SECRET:
         print(f"错误: 请在 vibefilming.config.json 中填写 feishu.app_id 和 feishu.app_secret\n配置文件: {CONFIG_PATH}", flush=True)
+        sys.exit(1)
+    try:
+        _validate_feishu_isolation(ALLOWED_USERS, PUBLIC_ACCESS)
+    except RuntimeError as exc:
+        print(f"错误: {exc}\n配置文件: {CONFIG_PATH}", flush=True)
         sys.exit(1)
     handler = lark.EventDispatcherHandler.builder("", "").register_p2_im_message_receive_v1(handle_message).build()
     retry_delay = 5

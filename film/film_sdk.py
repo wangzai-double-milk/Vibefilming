@@ -8,16 +8,23 @@
   - VLM / GenBGM 缺凭证时返回 stub 错误，不静默失败
 """
 import base64
+import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
 from typing import Optional
+
+from . import artifact_contracts, video_models
 
 # ============== 配置读取 ==============
 ROOT = Path(__file__).resolve().parent.parent
@@ -33,11 +40,9 @@ def _load_json_config() -> dict:
         return {}
 
 
-_config = _load_json_config()
-
-
 def _config_get(*path, default=None):
-    cur = _config
+    # 与 Agent 一致：配置修改后下一次调用生效，无需重启进程。
+    cur = _load_json_config()
     for key in path:
         if not isinstance(cur, dict) or key not in cur:
             return default
@@ -45,21 +50,130 @@ def _config_get(*path, default=None):
     return cur
 
 
+def _env_first(*names: str) -> str:
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def get_ark_key() -> str:
     return (
+        _env_first(
+            "ARK_API_KEY",
+            "VIBEFILMING_ARK_API_KEY",
+            "ARK_KEY",
+            "ARK_APIKEY",
+            "VOLC_ARK_API_KEY",
+        )
+        or
         _config_get("ark", "api_key", default="")
         or ""
     )
 
 
 def get_ark_base() -> str:
-    return (
+    value = (
+        _env_first("ARK_API_BASE", "VIBEFILMING_ARK_API_BASE")
+        or
         _config_get("ark", "api_base", default="")
         or "https://ark.cn-beijing.volces.com/api/v3"
+    )
+    return str(value).strip().strip("`'\"").rstrip("/")
+
+
+def get_sts_creds() -> tuple[str, str, str]:
+    """Read short-lived Ark credentials on every call so rotation is immediate."""
+    return (
+        _env_first("ARK_STS_AK", "VOLC_STS_AK", "ARK_ACCESS_KEY_ID"),
+        _env_first("ARK_STS_SK", "VOLC_STS_SK", "ARK_SECRET_ACCESS_KEY"),
+        _env_first("ARK_STS_TOKEN", "VOLC_STS_TOKEN", "X_SECURITY_TOKEN"),
+    )
+
+
+def _ark_sign_v4(method: str, url: str, body_bytes: bytes,
+                 ak: str, sk: str, token: str,
+                 content_type: str = "application/json") -> dict:
+    """Sign an Ark REST request with Volcengine SigV4 and an STS token."""
+    import hmac
+    from datetime import datetime, timezone
+    from urllib.parse import quote, urlsplit
+
+    parts = urlsplit(url)
+    host = parts.netloc
+    path = parts.path or "/"
+    service = _env_first("ARK_SIGN_SERVICE") or "ark"
+    region = _env_first("ARK_SIGN_REGION") or "cn-beijing"
+    now = datetime.now(timezone.utc)
+    x_date = now.strftime("%Y%m%dT%H%M%SZ")
+    short_date = x_date[:8]
+    payload_hash = hashlib.sha256(body_bytes).hexdigest()
+    query_pairs = []
+    for item in filter(None, parts.query.split("&")):
+        key, _, value = item.partition("=")
+        query_pairs.append((key, value))
+    canonical_query = "&".join(
+        f"{quote(key, safe='-_.~')}={quote(value, safe='-_.~')}"
+        for key, value in sorted(query_pairs)
+    )
+    signed_headers = "content-type;host;x-content-sha256;x-date;x-security-token"
+    canonical_headers = (
+        f"content-type:{content_type}\n"
+        f"host:{host}\n"
+        f"x-content-sha256:{payload_hash}\n"
+        f"x-date:{x_date}\n"
+        f"x-security-token:{token}\n"
+    )
+    canonical_request = "\n".join([
+        method.upper(), path, canonical_query,
+        canonical_headers, signed_headers, payload_hash,
+    ])
+    scope = f"{short_date}/{region}/{service}/request"
+    string_to_sign = "\n".join([
+        "HMAC-SHA256", x_date, scope,
+        hashlib.sha256(canonical_request.encode()).hexdigest(),
+    ])
+
+    def sign(key: bytes, message: str) -> bytes:
+        return hmac.new(key, message.encode(), hashlib.sha256).digest()
+
+    signing_key = sign(sign(sign(sk.encode(), short_date), region), service)
+    signing_key = sign(signing_key, "request")
+    signature = hmac.new(
+        signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    return {
+        "Host": host,
+        "X-Date": x_date,
+        "X-Content-Sha256": payload_hash,
+        "X-Security-Token": token,
+        "Content-Type": content_type,
+        "Authorization": (
+            f"HMAC-SHA256 Credential={ak}/{scope}, "
+            f"SignedHeaders={signed_headers}, Signature={signature}"
+        ),
+    }
+
+
+def _ark_auth_headers(method: str, url: str, body_bytes: bytes,
+                      content_type: str = "application/json") -> dict:
+    key = get_ark_key()
+    if key:
+        return {"Authorization": f"Bearer {key}", "Content-Type": content_type}
+    ak, sk, token = get_sts_creds()
+    if ak and sk and token:
+        return _ark_sign_v4(
+            method, url, body_bytes, ak, sk, token, content_type)
+    raise RuntimeError(
+        "ARK 鉴权缺失：请配置 ARK_API_KEY，或同时配置 "
+        "ARK_STS_AK / ARK_STS_SK / ARK_STS_TOKEN"
     )
 
 
 def get_extra(name: str, default=None):
+    env_value = _env_first(name)
+    if env_value:
+        return env_value
     config_key = {"VOLC_AK": "ak", "VOLC_SK": "sk"}.get(name)
     if config_key:
         value = _config_get("volc", config_key, default=None)
@@ -69,29 +183,33 @@ def get_extra(name: str, default=None):
 
 
 def get_model(name: str, default: str) -> str:
+    env_name = {
+        "text": "ARK_MODEL_TEXT",
+        "vlm": "ARK_MODEL_VLM",
+        "image": "ARK_MODEL_IMAGE",
+        "video": "ARK_MODEL_VIDEO",
+    }.get(name)
     return (
+        (_env_first(env_name) if env_name else "")
+        or
         _config_get("ark", "models", name, default="")
         or default
     )
 
 
 # ============== 模型 ID（可统一改） ==============
-MODEL_TEXT = get_model("text", "deepseek-v4-pro-260425")
-MODEL_VLM = get_model("vlm", "doubao-seed-2-0-pro-260215")
-MODEL_IMG = get_model("image", "doubao-seedream-4-5-251128")
-MODEL_VIDEO = get_model("video", "doubao-seedance-2-0-260128")  # 标准版（已弃用 fast 档）
+MODEL_TEXT = get_model("text", "doubao-seed-evolving")
+MODEL_VLM = get_model("vlm", "doubao-seed-evolving")
+MODEL_IMG = get_model("image", "doubao-seedream-5-0-260128")
+MODEL_VIDEO = video_models.resolve().model_id
 
 
 # ============== HTTP helper ==============
 def _http_post(url: str, body: dict, timeout: int = 180) -> dict:
-    key = get_ark_key()
-    if not key:
-        raise RuntimeError("ARK API key 未配置：请在 vibefilming.config.json 中填写 ark.api_key")
+    data = json.dumps(body).encode()
     req = urllib.request.Request(
-        url, data=json.dumps(body).encode(),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        method="POST",
-    )
+        url, data=data, headers=_ark_auth_headers("POST", url, data),
+        method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
@@ -101,15 +219,15 @@ def _http_post(url: str, body: dict, timeout: int = 180) -> dict:
 
 
 def _http_get(url: str, timeout: int = 60) -> dict:
-    key = get_ark_key()
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
+    req = urllib.request.Request(
+        url, headers=_ark_auth_headers("GET", url, b""))
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
 def _http_delete(url: str, timeout: int = 60) -> dict:
-    key = get_ark_key()
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"}, method="DELETE")
+    req = urllib.request.Request(
+        url, headers=_ark_auth_headers("DELETE", url, b""), method="DELETE")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read().decode()
@@ -123,9 +241,6 @@ def _http_post_multipart(url: str, fields: dict, file_field: str,
     """以 multipart/form-data 上传文件（ark Files API 用，纯标准库实现，不依赖 requests）。
     fields: 普通文本字段；file_field: 文件字段名；file_path: 本地文件。
     """
-    key = get_ark_key()
-    if not key:
-        raise RuntimeError("ARK API key 未配置：请在 vibefilming.config.json 中填写 ark.api_key")
     boundary = f"----vibefilming{uuid.uuid4().hex}"
     crlf = b"\r\n"
     parts = []
@@ -144,14 +259,11 @@ def _http_post_multipart(url: str, fields: dict, file_field: str,
     parts.append(fp.read_bytes() + crlf)
     parts.append(b"--" + boundary.encode() + b"--" + crlf)
     data = b"".join(parts)
+    content_type = f"multipart/form-data; boundary={boundary}"
     req = urllib.request.Request(
         url, data=data,
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-        },
-        method="POST",
-    )
+        headers=_ark_auth_headers("POST", url, data, content_type),
+        method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
@@ -160,9 +272,20 @@ def _http_post_multipart(url: str, fields: dict, file_field: str,
         raise RuntimeError(f"HTTP {e.code} on {url}: {body_text[:300]}")
 
 
-def _download(url: str, save_path: Path, timeout: int = 180) -> Path:
+def _download(url: str, save_path: Path, timeout: int = 45) -> Path:
+    save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path.write_bytes(urllib.request.urlopen(url, timeout=timeout).read())
+    temp = save_path.with_name(f".{save_path.name}.{uuid.uuid4().hex}.part")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response, temp.open("wb") as handle:
+            expected = int(response.headers.get("Content-Length") or 0)
+            while chunk := response.read(1024 * 1024):
+                handle.write(chunk)
+        if not temp.stat().st_size or (expected and temp.stat().st_size != expected):
+            raise IOError("模型文件下载不完整；保留原 task_id 重试下载")
+        temp.replace(save_path)
+    finally:
+        temp.unlink(missing_ok=True)
     return save_path
 
 
@@ -184,7 +307,9 @@ def _image_mime_from_bytes(data: bytes, fallback_suffix: str) -> str:
 
 def _img_to_url(ref: str) -> str:
     """把图片参考归一成模型能直接吃的形式。
-    - http(s)/data: 原样返回；
+    - data: 原样返回；
+    - http(s): 由工具进程下载后转成 data URI，避免让模型服务二次拉取
+      一次性预签名 URL；
     - 本地存在的文件 → base64 内嵌成 data URI。
       这样 agent 只需转抄很短的本地 path，不必转抄那条很长的带签名 url；
       实测 LLM 转抄长 url 时常把 `?X-Tos-Signature=...` query 段截掉，
@@ -193,8 +318,47 @@ def _img_to_url(ref: str) -> str:
     - 其余（找不到的字符串）原样返回，交给上游报错。
     """
     s = str(ref).strip()
-    if s.startswith(("http://", "https://", "data:")):
+    if s.startswith("data:"):
         return s
+    if s.startswith(("http://", "https://")):
+        query = {
+            key.lower(): urllib.parse.unquote(value)
+            for key, value in urllib.parse.parse_qsl(
+                urllib.parse.urlsplit(s).query, keep_blank_values=True)
+        }
+        signature = (
+            query.get("x-tos-signature")
+            or query.get("x-amz-signature")
+            or ""
+        )
+        if signature and not re.fullmatch(r"[0-9a-fA-F]{64}", signature):
+            raise ValueError(
+                "图片预签名 URL 已损坏：signature 必须是 64 位十六进制。"
+                "请改用项目内 path 或 project:// artifact_ref。"
+            )
+        request = urllib.request.Request(
+            s, headers={"User-Agent": "VibeFilming/1.0"})
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                data = response.read(20 * 1024 * 1024 + 1)
+                content_type = (
+                    response.headers.get_content_type()
+                    if response.headers else ""
+                )
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"图片 URL 下载失败 HTTP {exc.code}。不要重试该预签名 URL；"
+                "请改用 gen_image 返回的项目内 path 或 artifact_ref。"
+            ) from exc
+        if len(data) > 20 * 1024 * 1024:
+            raise ValueError("远程参考图超过 20MB，请先登记为项目素材")
+        mime = (
+            content_type
+            if content_type.startswith("image/")
+            else _image_mime_from_bytes(
+                data, Path(urllib.parse.urlsplit(s).path).suffix)
+        )
+        return f"data:{mime};base64,{base64.b64encode(data).decode()}"
     p = Path(s)
     if p.exists():
         data = p.read_bytes()
@@ -209,7 +373,7 @@ def doubao_chat(messages: list, max_tokens: int = 16384, temperature: float = 0.
                 model: str = None) -> dict:
     """Doubao 文本对话。messages 遵循 OpenAI 格式。返回完整 API JSON。"""
     body = {
-        "model": model or MODEL_TEXT,
+        "model": model or get_model("text", MODEL_TEXT),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -236,7 +400,7 @@ def doubao_vlm(image_paths: list, text: str, max_tokens: int = 16384,
     })
     
     body = {
-        "model": MODEL_VLM,
+        "model": get_model("vlm", MODEL_VLM),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -375,7 +539,7 @@ def _video_understand_via_files(video: str, text: str, fps: float,
                                "content": [{"type": "input_text", "text": system}]})
         input_msgs.append({"role": "user", "content": user_content})
         body = {
-            "model": MODEL_VLM,
+            "model": get_model("vlm", MODEL_VLM),
             "input": input_msgs,
             "max_output_tokens": max_tokens,
             "temperature": temperature,
@@ -524,7 +688,7 @@ def prepare_video_for_vlm(video: str, *, force: bool = False,
 def doubao_video_understand(video: str, text: str, max_tokens: int = 16384,
                             temperature: float = 0.1, fps: float = 1.0,
                             system: Optional[str] = None) -> dict:
-    """Doubao Seed 2.0 pro 直接理解视频（不抽帧）。
+    """使用当前配置的 Seed VLM 直接理解单个视频（当前为 Seed 2.1 Pro，不抽帧）。
     video 可以是本地路径或 https URL。
     本地文件 ≤35MB：base64 内嵌走 chat/completions（轻量）。
     本地文件 >35MB：自动走 Files API + Responses API（官方大文件方案，上限 512MB），
@@ -567,7 +731,7 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 16384,
     })
     
     body = {
-        "model": MODEL_VLM,
+        "model": get_model("vlm", MODEL_VLM),
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
@@ -596,6 +760,28 @@ def doubao_video_understand(video: str, text: str, max_tokens: int = 16384,
 
 
 # ============== Seedream（文生图 / 图编辑统一接口）==============
+IMAGE_MIN_PIXELS = 2560 * 1440
+IMAGE_SIZE_ALIGNMENT = 8
+
+
+def normalize_image_size(size: str) -> str:
+    """Raise undersized WxH requests to Seedream's minimum pixel count."""
+    value = str(size or "").strip()
+    match = re.fullmatch(r"(\d{2,5})\s*[xX×]\s*(\d{2,5})", value)
+    if not match:
+        return value
+    width, height = map(int, match.groups())
+    if width <= 0 or height <= 0:
+        raise ValueError(f"图片尺寸必须为正整数：{size!r}")
+    if width * height >= IMAGE_MIN_PIXELS:
+        return f"{width}x{height}"
+    scale = math.sqrt(IMAGE_MIN_PIXELS / (width * height))
+    align = IMAGE_SIZE_ALIGNMENT
+    width = math.ceil(width * scale / align) * align
+    height = math.ceil(height * scale / align) * align
+    return f"{width}x{height}"
+
+
 def gen_image(prompt: str, save_path: Path,
               reference_images=None,
               size: str = "2048x2048",
@@ -606,8 +792,9 @@ def gen_image(prompt: str, save_path: Path,
         可传本地 path（自动 base64 内嵌）或 http(s) url；优先传本地 path，省去转抄长签名 url。
     watermark: 是否加「AI 生成」水印/标识（官方默认 true，本 SDK 默认 true）。
     """
+    size = normalize_image_size(size)
     body = {
-        "model": MODEL_IMG,
+        "model": get_model("image", MODEL_IMG),
         "prompt": prompt,
         "size": size,
         "response_format": "url",
@@ -626,28 +813,138 @@ def gen_image(prompt: str, save_path: Path,
 
 
 # ============== Seedance（异步） ==============
+class VideoSubmissionError(RuntimeError):
+    """A request reached the submission boundary; acceptance may be unknown."""
+
+
 def submit_video_task(prompt: str,
                       reference_images: Optional[list] = None,
                       reference_video_url: Optional[str] = None,
+                      reference_video_urls: Optional[list] = None,
+                      reference_audio_urls: Optional[list] = None,
+                      first_frame: Optional[str] = None,
+                      last_frame: Optional[str] = None,
                       duration: Optional[int] = None,
                       generate_audio: bool = True,
                       resolution: str = "720p",
                       ratio: str = "16:9",
-                      seed: Optional[int] = None) -> dict:
-    """提交 Seedance 任务（**多模态参考模式 / 路径 B**）。返回 {task_id, raw}。
+                      seed: Optional[int] = None,
+                      model: Optional[str] = None,
+                      omni_reference_task_type: Optional[str] = None,
+                      output_format: Optional[str] = None) -> dict:
+    """提交 Seedance 2.0/2.5 异步视频任务，按模型能力严格校验。"""
+    def normalize_urls(values, legacy=None) -> list[str]:
+        raw = []
+        if legacy:
+            raw.append(legacy)
+        if values:
+            if isinstance(values, str):
+                raw.append(values)
+            else:
+                raw.extend(values)
+        result = []
+        for item in raw:
+            value = (
+                item.strip()
+                if isinstance(item, str)
+                else str((item or {}).get("url") or "").strip()
+                if isinstance(item, dict)
+                else ""
+            )
+            if value and value not in result:
+                result.append(value)
+        return result
 
-    本 SDK 统一走「t2v + 多模态参考」一条路径——商业短剧/广告类项目的标准姿势：
-      - prompt 里详细描述本镜场景/动作/构图，并用文字暗示首尾帧
-      - reference_images：最多 9 张图（角色三视图 + 关键道具 + 概念图等）
-      - reference_video_url：链式生成第 N 段（N≥2）时把上一段视频塞进来，
-        让模型看到完整动作连续性
-      - generate_audio=True → Seedance 2.0 原生生成同步音频（本 SDK 默认开启）
-      - duration 4-15 秒；不传由模型自定（一般 5s）
-      - resolution 支持 480p / 720p / 1080p / 4k；默认 720p，调用方按交付规格选择
-    """
+    video_urls = normalize_urls(reference_video_urls, reference_video_url)
+    audio_urls = normalize_urls(reference_audio_urls)
+    profile = video_models.resolve(model, strict=bool(model))
+    model_name = profile.model_id
+    images = list(reference_images or [])
+    if len(images) > profile.max_images:
+        raise ValueError(
+            f"{profile.label} reference_images 最多 {profile.max_images} 张，"
+            f"当前为 {len(images)}")
+    if len(video_urls) > profile.max_videos:
+        raise ValueError(
+            f"{profile.label} reference_video_urls 最多 {profile.max_videos} 段，"
+            f"当前为 {len(video_urls)}")
+    if len(audio_urls) > profile.max_audios:
+        raise ValueError(
+            f"{profile.label} reference_audio_urls 最多 {profile.max_audios} 段，"
+            f"当前为 {len(audio_urls)}")
+    if audio_urls and not images and not video_urls and not profile.audio_only:
+        raise ValueError(
+            f"{profile.label} 不支持仅输入参考音频；"
+            "至少同时提供 1 张参考图或 1 段参考视频")
+    if seed is not None:
+        raise ValueError(f"{profile.label} 暂不支持 seed 参数，请删除 seed 后重试")
+    if last_frame and not first_frame:
+        raise ValueError("last_frame 不能单独输入，必须同时提供 first_frame")
+    if (first_frame or last_frame) and (images or video_urls or audio_urls):
+        raise ValueError("首尾帧模式不能与 reference_images/video/audio 同时使用")
+    if (first_frame or last_frame) and ratio != "adaptive":
+        raise ValueError("首帧/首尾帧模式必须使用 ratio=adaptive")
+
+    task_type = str(omni_reference_task_type or "").strip()
+    if task_type and (first_frame or last_frame):
+        raise ValueError(
+            "首帧/首尾帧是独立锁定任务，不能同时设置 "
+            "omni_reference_task_type")
+    if task_type:
+        if task_type not in profile.task_types:
+            supported = "/".join(profile.task_types) or "无"
+            raise ValueError(
+                f"{profile.label} 不支持 omni_reference_task_type={task_type!r}，"
+                f"可选：{supported}")
+        if task_type in {"edit", "extend"} and not video_urls:
+            raise ValueError(f"{task_type} 任务必须提供 reference_video_urls")
+        if task_type in {"edit", "extend"} and ratio != "adaptive":
+            raise ValueError(f"{task_type} 任务必须使用 ratio=adaptive")
+        if task_type == "edit" and duration != -1:
+            raise ValueError("edit 任务必须使用 duration=-1")
+
+    if duration is not None:
+        parsed_duration = int(duration)
+        if (
+            parsed_duration != -1
+            and not profile.min_output_duration
+            <= parsed_duration
+            <= profile.max_output_duration
+        ):
+            raise ValueError(
+                f"{profile.label} duration 只支持 -1 或 "
+                f"{profile.min_output_duration}-{profile.max_output_duration} 秒，"
+                f"当前为 {parsed_duration}")
+    if ratio not in profile.ratios:
+        raise ValueError(
+            f"{profile.label} ratio 不支持 {ratio!r}，可选：{list(profile.ratios)}")
+    if resolution not in profile.resolutions:
+        raise ValueError(
+            f"{profile.label} resolution 只支持 {'/'.join(profile.resolutions)}，"
+            f"当前为 {resolution!r}")
+    output_format = str(
+        output_format
+        or (
+            "mov"
+            if profile.key == "2.5" and task_type in {"edit", "extend"}
+            else "mp4"
+        )
+    ).strip().lower()
+    if output_format not in profile.output_formats:
+        raise ValueError(
+            f"{profile.label} output_format 只支持 "
+            f"{'/'.join(profile.output_formats)}，当前为 {output_format!r}")
+
     content = [{"type": "text", "text": prompt}]
-    if reference_images:
-        for ref in reference_images:
+    for ref, role in ((first_frame, "first_frame"), (last_frame, "last_frame")):
+        if ref:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": _img_to_url(ref)},
+                "role": role,
+            })
+    if images:
+        for ref in images:
             if isinstance(ref, str):
                 url = ref
             elif isinstance(ref, dict) and ref.get("url"):
@@ -659,30 +956,45 @@ def submit_video_task(prompt: str,
                 "image_url": {"url": _img_to_url(url)},
                 "role": "reference_image",
             })
-    if reference_video_url:
+    for url in video_urls:
         content.append({
             "type": "video_url",
-            "video_url": {"url": reference_video_url},
+            "video_url": {"url": url},
             "role": "reference_video",
         })
-    valid_resolutions = {"480p", "720p", "1080p", "4k"}
-    if resolution not in valid_resolutions:
-        raise ValueError(f"Seedance resolution 只支持 480p/720p/1080p/4k，当前为 {resolution!r}")
-    body = {"model": MODEL_VIDEO, "content": content,
-            "resolution": resolution, "ratio": ratio}
-    if duration:
+    for url in audio_urls:
+        content.append({
+            "type": "audio_url",
+            "audio_url": {"url": url},
+            "role": "reference_audio",
+        })
+    body = {"model": model_name, "content": content,
+            "resolution": resolution, "ratio": ratio,
+            "generate_audio": bool(generate_audio)}
+    if profile.key == "2.5":
+        body["output_format"] = output_format
+    if duration is not None:
         body["duration"] = int(duration)
-    if generate_audio:
-        body["generate_audio"] = True
-    if seed is not None:
-        body["seed"] = int(seed)
-    raw = _http_post(f"{get_ark_base()}/contents/generations/tasks", body)
-    return {"task_id": raw.get("id"), "model": MODEL_VIDEO, "raw": raw, "body": body}
+    if task_type:
+        body["omni_reference_task_type"] = task_type
+    try:
+        raw = _http_post(f"{get_ark_base()}/contents/generations/tasks", body)
+        if not isinstance(raw, dict) or not raw.get("id"):
+            raise RuntimeError("Seedance 提交响应未返回 task_id，不能视为成功")
+    except Exception as exc:
+        raise VideoSubmissionError(str(exc)) from exc
+    return {
+        "task_id": raw.get("id"),
+        "model": body["model"],
+        "model_version": profile.key,
+        "raw": raw,
+        "body": body,
+    }
 
 
 def query_video_task(task_id: str) -> dict:
     """查询 Seedance 任务状态。返回 {status, video_url?, raw}"""
-    raw = _http_get(f"{get_ark_base()}/contents/generations/tasks/{task_id}")
+    raw = _http_get(f"{get_ark_base()}/contents/generations/tasks/{task_id}", timeout=20)
     status = raw.get("status")
     content = raw.get("content", {}) or {}
     video_url = content.get("video_url") or raw.get("video_url")
@@ -778,24 +1090,180 @@ def probe_video_size(clip: str) -> tuple[int, int]:
     raise RuntimeError(f"probe_video_size 失败，无法探测视频宽高：{clip}")
 
 
+def probe_video_duration(clip: str) -> float:
+    """探测视频流自身时长，不把更长的音轨误算成画面时长。
+
+    imageio-ffmpeg 不附带 ffprobe，因此用 showinfo 解码视频流并取最后一帧的
+    pts_time + duration_time。探测失败时再回退容器时长。
+    """
+    try:
+        r = subprocess.run(
+            [
+                FFMPEG, "-hide_banner", "-i", str(clip),
+                "-map", "0:v:0", "-an", "-vf", "showinfo", "-f", "null", "-",
+            ],
+            capture_output=True, text=True, timeout=max(60, int(probe_duration(clip) * 4)),
+        )
+        matches = re.findall(
+            r"pts_time:([0-9.eE+-]+).*?duration_time:([0-9.eE+-]+)",
+            r.stderr,
+        )
+        if matches:
+            pts, frame_duration = matches[-1]
+            duration = float(pts) + float(frame_duration)
+            if duration > 0:
+                return duration
+    except Exception:
+        pass
+    return probe_duration(clip)
+
+
+def probe_media(clip: str, accurate_duration: bool = False) -> dict:
+    """返回 Agent 可消费的音视频元数据，不依赖系统 ffprobe。
+
+    默认读取容器时长，避免每次探测都完整解码长视频；需要校验精确画面时长时，
+    accurate_duration=True 会复用 probe_video_duration 做完整视频流探测。
+    """
+    path = Path(clip)
+    if not path.is_file():
+        raise FileNotFoundError(f"媒体文件不存在：{clip}")
+    r = subprocess.run(
+        [FFMPEG, "-hide_banner", "-i", str(path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    stderr = r.stderr or ""
+    video_line = next(
+        (line.strip() for line in stderr.splitlines() if "Video:" in line), "")
+    if not video_line:
+        raise RuntimeError(f"probe_media 未找到视频流：{clip}")
+
+    size_match = re.search(r"\b(\d{2,5})x(\d{2,5})\b", video_line)
+    fps_match = re.search(r"(\d+(?:\.\d+)?)\s+fps\b", video_line)
+    codec_match = re.search(r"Video:\s*([a-zA-Z0-9_]+)", video_line)
+    audio_line = next(
+        (line.strip() for line in stderr.splitlines() if "Audio:" in line), "")
+    audio_codec_match = re.search(r"Audio:\s*([a-zA-Z0-9_]+)", audio_line)
+    sample_rate_match = re.search(r"(\d+)\s+Hz\b", audio_line)
+    channel_match = re.search(
+        r"\b(mono|stereo|2\.1|3\.0|4\.0|5\.1|7\.1)\b", audio_line)
+
+    duration = (
+        probe_video_duration(str(path))
+        if accurate_duration else probe_duration(str(path))
+    )
+    fps = float(fps_match.group(1)) if fps_match else None
+    width = int(size_match.group(1)) if size_match else None
+    height = int(size_match.group(2)) if size_match else None
+    return {
+        "path": str(path),
+        "duration": duration,
+        "duration_mode": "decoded_video" if accurate_duration else "container",
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "estimated_frames": round(duration * fps) if fps else None,
+        "video_codec": codec_match.group(1) if codec_match else None,
+        "has_audio": bool(audio_line),
+        "audio_codec": audio_codec_match.group(1) if audio_codec_match else None,
+        "sample_rate": (
+            int(sample_rate_match.group(1)) if sample_rate_match else None
+        ),
+        "channels": channel_match.group(1) if channel_match else None,
+        "file_size": path.stat().st_size,
+    }
+
+
+def probe_video_fps(clip: str) -> float:
+    fps = probe_media(clip).get("fps")
+    if not fps or fps <= 0:
+        raise RuntimeError(f"probe_video_fps 失败，无法探测视频帧率：{clip}")
+    return float(fps)
+
+
 def video_concat(clips: list, save_path: Path, crossfade: float = 0.3,
                  fade_in: float = 0.0, fade_out: float = 0.0,
-                 preset: str = "ultrafast") -> dict:
-    """一段/多段拼接。视频硬切，音频在切点做短淡化，统一重编码。
+                 preset: str = "ultrafast",
+                 transitions: Optional[list] = None,
+                 fps: Optional[float] = None) -> dict:
+    """一段/多段拼接，支持逐切点画面转场并统一重编码。
 
     这里的 crossfade 是切点音频平滑时长：上一段尾部淡出、下一段头部淡入。
-    不做画面重叠，也不改变段落总时长，避免对白/口型相对画面漂移。
+    transitions 不传时画面硬切，不改变段落总时长。传入时必须与切点数量一致，
+    每项格式为 {"type": "cut|fade|dissolve|...", "duration": 0.5}。
+    非 cut 类型使用 xfade + acrossfade，成片时长会减去画面重叠时长。
     """
     if not clips:
         raise ValueError("video_concat 至少需要 1 个 clip")
+    if transitions is not None:
+        if not isinstance(transitions, list):
+            raise ValueError("transitions 必须是数组")
+        if len(transitions) != len(clips) - 1:
+            raise ValueError(
+                f"transitions 数量必须等于切点数 {len(clips) - 1}，"
+                f"实际为 {len(transitions)}"
+            )
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    durations = [probe_duration(c) for c in clips]
+    # 拼接是以画面为主的操作。容器可能因 duration_mode=longest 带有更长音轨，
+    # 若用容器时长计算 xfade offset，画面已经结束后才开始转场，会吞掉下一段。
+    durations = [probe_video_duration(c) for c in clips]
+    normalized_transitions = []
+    for i in range(len(clips) - 1):
+        raw = transitions[i] if transitions is not None else {"type": "cut"}
+        if isinstance(raw, str):
+            raw = {"type": raw}
+        if not isinstance(raw, dict):
+            raise ValueError(f"transitions[{i}] 必须是对象或字符串")
+        raw_transition = str(raw.get("type", "cut")).strip().lower()
+        transition = raw_transition
+        if transition in {
+            "hard_cut", "hardcut", "source_cut", "match_cut", "matchcut",
+            "generation_match_cut",
+        }:
+            transition = "cut"
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", transition):
+            raise ValueError(f"transitions[{i}].type 非法：{transition}")
+        duration = 0.0 if transition == "cut" else float(raw.get("duration", 0.5))
+        if transition != "cut":
+            max_duration = min(durations[i], durations[i + 1])
+            if duration <= 0 or duration >= max_duration:
+                raise ValueError(
+                    f"transitions[{i}].duration 必须 > 0 且小于相邻片段时长 "
+                    f"{max_duration:.3f}s"
+                )
+        normalized = {
+            "type": transition,
+            "duration": duration,
+        }
+        if raw_transition != transition:
+            normalized["strategy"] = raw_transition
+        for key in (
+            "at", "reason", "audio_handling", "source_time_s",
+            "cut_class", "left_end_state", "right_start_state",
+            "continuity_anchors", "generation_overlap_s", "visual_bridge",
+            "effect_source", "effect_peak", "effect_clear", "seam_review",
+            "fallback",
+        ):
+            if raw.get(key) is not None:
+                normalized[key] = raw[key]
+        normalized_transitions.append(normalized)
+    for i in range(1, len(clips) - 1):
+        incoming = normalized_transitions[i - 1]["duration"]
+        outgoing = normalized_transitions[i]["duration"]
+        if incoming + outgoing >= durations[i]:
+            raise ValueError(
+                f"片段 {i} 两侧转场共 {incoming + outgoing:.3f}s，"
+                f"必须小于该片段时长 {durations[i]:.3f}s"
+            )
+
     target_w, target_h = probe_video_size(clips[0])
+    target_fps = float(fps) if fps is not None else probe_video_fps(clips[0])
+    if target_fps < 1 or target_fps > 120:
+        raise ValueError(f"video_concat fps 必须在 1-120，当前为 {target_fps}")
+    fps_text = f"{target_fps:.6f}".rstrip("0").rstrip(".")
     args = []
     filters = []
-    concat_inputs = []
     next_input = 0
     smooth = max(0.0, float(crossfade or 0.0))
 
@@ -817,17 +1285,24 @@ def video_concat(clips: list, save_path: Path, crossfade: float = 0.3,
         a_label = f"a{i}"
         filters.append(
             f"[{clip_input}:v]"
-            f"setpts=PTS-STARTPTS,"
-            f"fps=24,"
+            f"fps={fps_text},"
             f"scale={target_w}:{target_h}:force_original_aspect_ratio=decrease,"
             f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,"
-            f"setsar=1,format=yuv420p"
+            f"setsar=1,format=yuv420p,setpts=PTS-STARTPTS,settb=AVTB"
             f"[{v_label}]"
         )
 
         fades = []
-        start_fade = float(fade_in or 0.0) if i == 0 else smooth
-        end_fade = float(fade_out or 0.0) if i == len(clips) - 1 else smooth
+        previous_is_cut = i > 0 and normalized_transitions[i - 1]["type"] == "cut"
+        next_is_cut = (
+            i < len(clips) - 1 and normalized_transitions[i]["type"] == "cut"
+        )
+        start_fade = float(fade_in or 0.0) if i == 0 else (
+            smooth if previous_is_cut else 0.0
+        )
+        end_fade = float(fade_out or 0.0) if i == len(clips) - 1 else (
+            smooth if next_is_cut else 0.0
+        )
         start_fade = min(max(0.0, start_fade), max(0.0, duration / 3.0))
         end_fade = min(max(0.0, end_fade), max(0.0, duration / 3.0))
         if start_fade > 0:
@@ -845,56 +1320,98 @@ def video_concat(clips: list, save_path: Path, crossfade: float = 0.3,
             f"{fade_chain}"
             f"[{a_label}]"
         )
-        concat_inputs.append(f"[{v_label}][{a_label}]")
 
-    filters.append("".join(concat_inputs) + f"concat=n={len(clips)}:v=1:a=1[v][a]")
-    timeout = max(300, int(sum(durations) * 20))
+    current_v = "v0"
+    current_a = "a0"
+    output_duration = durations[0]
+    timeline = [{"clip": str(clips[0]), "start": 0.0, "end": durations[0]}]
+    for i, transition in enumerate(normalized_transitions, start=1):
+        next_v = f"vx{i}"
+        next_a = f"ax{i}"
+        clip_start = output_duration - transition["duration"]
+        if transition["type"] == "cut":
+            filters.append(
+                f"[{current_v}][v{i}]concat=n=2:v=1:a=0[{next_v}]"
+            )
+            filters.append(
+                f"[{current_a}][a{i}]concat=n=2:v=0:a=1[{next_a}]"
+            )
+            output_duration += durations[i]
+        else:
+            duration = transition["duration"]
+            offset = output_duration - duration
+            # concat 后的帧率元数据可能不再满足 xfade；转场输入需再次声明
+            # 相同帧率和 timebase。纯硬切路径不会经过这里，不会按段丢帧。
+            filters.append(
+                f"[{current_v}]setpts=PTS-STARTPTS,"
+                f"fps={fps_text},settb=AVTB[xfleft{i}]"
+            )
+            filters.append(
+                f"[v{i}]setpts=PTS-STARTPTS,"
+                f"fps={fps_text},settb=AVTB[xfright{i}]"
+            )
+            filters.append(
+                f"[xfleft{i}][xfright{i}]"
+                f"xfade=transition={transition['type']}:"
+                f"duration={duration:.3f}:offset={offset:.3f}[{next_v}]"
+            )
+            filters.append(
+                f"[{current_a}][a{i}]acrossfade=d={duration:.3f}[{next_a}]"
+            )
+            output_duration += durations[i] - duration
+        timeline.append({
+            "clip": str(clips[i]), "start": clip_start, "end": output_duration,
+            "transition_in": dict(transition),
+        })
+        current_v = next_v
+        current_a = next_a
+
+    visual_fades = []
+    visual_fade_in = min(
+        max(0.0, float(fade_in or 0.0)),
+        max(0.0, output_duration / 3.0),
+    )
+    visual_fade_out = min(
+        max(0.0, float(fade_out or 0.0)),
+        max(0.0, output_duration / 3.0),
+    )
+    if visual_fade_in > 0:
+        visual_fades.append(f"fade=t=in:st=0:d={visual_fade_in:.3f}")
+    if visual_fade_out > 0:
+        start = max(0.0, output_duration - visual_fade_out)
+        visual_fades.append(
+            f"fade=t=out:st={start:.3f}:d={visual_fade_out:.3f}"
+        )
+    if visual_fades:
+        filters.append(f"[{current_v}]{','.join(visual_fades)}[vout]")
+        current_v = "vout"
+    filters.append(f"[{current_v}]format=yuv420p[vfinal]")
+    current_v = "vfinal"
+
+    timeout = max(300, int(output_duration * 20))
     _run_ffmpeg([
         *args,
         "-filter_complex", ";".join(filters),
-        "-map", "[v]", "-map", "[a]",
+        "-map", f"[{current_v}]", "-map", f"[{current_a}]",
         "-c:v", "libx264", "-preset", preset,
-        "-c:a", "aac", "-movflags", "+faststart",
+        "-r", fps_text, "-c:a", "aac", "-movflags", "+faststart",
         str(save_path),
     ], timeout=timeout)
-    return {
+    result = {
+        "contract": artifact_contracts.TIMELINE,
         "path": str(save_path),
         "clips": len(clips),
-        "duration": sum(durations),
+        "duration": output_duration,
+        "fps": target_fps,
         "audio_smoothing": smooth,
+        "fade_in": visual_fade_in,
+        "fade_out": visual_fade_out,
+        "transitions": normalized_transitions,
+        "timeline": timeline,
     }
-
-
-def video_crossfade(clip_a: str, clip_b: str, save_path: Path,
-                    duration: float = 1.0, offset: float = 4.0,
-                    transition: str = "fade", preset: str = "ultrafast") -> dict:
-    """A/B 两段做转场（视频 xfade + 音频 acrossfade）。
-    transition: xfade 转场类型（fade/wipeleft/slideup/circleopen/dissolve 等，见 ffmpeg xfade 文档）。"""
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    args = ["-i", str(clip_a), "-i", str(clip_b)]
-    audio_a = "[0:a]"
-    audio_b = "[1:a]"
-    next_input = 2
-    if not has_audio_stream(clip_a):
-        args.extend(["-f", "lavfi", "-t", str(probe_duration(clip_a)),
-                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
-        audio_a = f"[{next_input}:a]"
-        next_input += 1
-    if not has_audio_stream(clip_b):
-        args.extend(["-f", "lavfi", "-t", str(probe_duration(clip_b)),
-                     "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
-        audio_b = f"[{next_input}:a]"
-    args.extend([
-        "-filter_complex",
-        f"[0:v][1:v]xfade=transition={transition}:duration={duration}:offset={offset}[v];"
-        f"{audio_a}{audio_b}acrossfade=d={duration}[a]",
-        "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", preset,
-        str(save_path),
-    ])
-    _run_ffmpeg(args)
-    return {"path": str(save_path)}
+    save_path.with_suffix(".timeline.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
 
 
 def video_trim(clip: str, save_path: Path, start: float, end: float,
@@ -907,7 +1424,13 @@ def video_trim(clip: str, save_path: Path, start: float, end: float,
         "-c:v", "libx264", "-preset", preset, "-c:a", "aac",
         str(save_path),
     ])
-    return {"path": str(save_path)}
+    result = probe_media(str(save_path))
+    result.update({
+        "source": str(clip),
+        "start": float(start),
+        "end": float(end),
+    })
+    return result
 
 
 def video_speed(clip: str, save_path: Path, factor: float,
@@ -994,7 +1517,17 @@ def video_fade(clip: str, save_path: Path, fade_in: float = 0.5,
         args.append("-an")
     args.append(str(save_path))
     _run_ffmpeg(args)
-    return {"path": str(save_path)}
+    result = {
+        "contract": artifact_contracts.TIMELINE,
+        "path": str(save_path),
+        "duration": total_duration,
+        "fade_in": fade_in,
+        "fade_out": fade_out,
+        "has_audio": has_audio_stream(str(save_path)),
+    }
+    save_path.with_suffix(".timeline.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
 
 
 def video_portrait(clip: str, save_path: Path,
@@ -1176,25 +1709,6 @@ def audio_amix(base_video: str, bgm_audio: str, save_path: Path,
     return {"path": str(save_path)}
 
 
-def burn_subtitle(clip: str, save_path: Path, text: str,
-                  start: float = 0, end: float = 3,
-                  fontsize: int = 32, y_pos: str = "h-100") -> dict:
-    """在指定时间段烧录文字字幕。"""
-    save_path = Path(save_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    safe_text = text.replace("'", "").replace(":", " ")
-    _run_ffmpeg([
-        "-i", str(clip),
-        "-vf",
-        f"drawtext=text='{safe_text}':fontsize={fontsize}:fontcolor=white:"
-        f"x=(w-text_w)/2:y={y_pos}:box=1:boxcolor=black@0.5:boxborderw=8:"
-        f"enable='between(t,{start},{end})'",
-        "-c:a", "copy", "-c:v", "libx264", "-preset", "ultrafast",
-        str(save_path),
-    ])
-    return {"path": str(save_path)}
-
-
 def extract_frames(clip: str, save_dir: Path, fps: float = 1.0) -> dict:
     """抽帧。返回 {paths: [...]}。"""
     save_dir = Path(save_dir)
@@ -1207,6 +1721,98 @@ def extract_frames(clip: str, save_dir: Path, fps: float = 1.0) -> dict:
     ])
     paths = sorted(str(p) for p in save_dir.glob("*.jpg"))
     return {"paths": paths, "count": len(paths)}
+
+
+def extract_boundary_frame(
+    clip: str,
+    save_path: Path,
+    *,
+    edge: str = "last",
+    offset_s: float = 0.0,
+) -> dict:
+    """Extract one exact boundary frame for a later first/last-frame task."""
+    if edge not in {"first", "last"}:
+        raise ValueError("extract_boundary_frame edge 只支持 first/last")
+    offset = float(offset_s)
+    if offset < 0:
+        raise ValueError("extract_boundary_frame offset_s 必须 >= 0")
+    duration = probe_video_duration(clip)
+    fps = probe_video_fps(clip)
+    last_timestamp = max(0.0, duration - max(1.0 / fps, 0.001))
+    timestamp = (
+        min(last_timestamp, offset)
+        if edge == "first"
+        else max(0.0, last_timestamp - offset)
+    )
+    output = Path(save_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _run_ffmpeg([
+        "-i", str(clip),
+        "-ss", f"{timestamp:.6f}",
+        "-frames:v", "1",
+        "-compression_level", "3",
+        str(output),
+    ])
+    return {
+        "clip": str(clip),
+        "edge": edge,
+        "offset_s": offset,
+        "time_s": round(timestamp, 6),
+        "duration_s": duration,
+        "fps": fps,
+        "path": str(output),
+    }
+
+
+def extract_seam_frames(left_clip: str, right_clip: str, save_dir: Path,
+                        window: float = 0.3) -> dict:
+    """抽取左段末三帧和右段初三帧，供相邻片段接缝审查。"""
+    if window <= 0:
+        raise ValueError("extract_seam_frames window 必须 > 0")
+    save_dir = Path(save_dir)
+    if save_dir.exists():
+        shutil.rmtree(save_dir)
+    save_dir.mkdir(parents=True)
+
+    left_duration = probe_video_duration(left_clip)
+    right_duration = probe_video_duration(right_clip)
+    left_fps = probe_video_fps(left_clip)
+    right_fps = probe_video_fps(right_clip)
+    left_last = max(0.0, left_duration - max(1.0 / left_fps, 0.001))
+    right_last = max(0.0, right_duration - max(1.0 / right_fps, 0.001))
+    samples = (
+        ("left_1", left_clip, max(0.0, left_duration - window)),
+        ("left_2", left_clip, max(0.0, left_duration - window / 2.0)),
+        ("left_3", left_clip, left_last),
+        ("right_1", right_clip, 0.0),
+        ("right_2", right_clip, min(right_last, window / 2.0)),
+        ("right_3", right_clip, min(right_last, window)),
+    )
+    frames = []
+    for label, clip, timestamp in samples:
+        path = save_dir / f"{label}.jpg"
+        _run_ffmpeg([
+            "-i", str(clip),
+            "-ss", f"{timestamp:.6f}",
+            "-frames:v", "1",
+            "-q:v", "2",
+            str(path),
+        ])
+        frames.append({
+            "label": label,
+            "clip": str(clip),
+            "time_s": round(timestamp, 6),
+            "path": str(path),
+        })
+    return {
+        "contract": artifact_contracts.SEAM_EVIDENCE,
+        "left_clip": str(left_clip),
+        "right_clip": str(right_clip),
+        "window_s": float(window),
+        "frames": frames,
+        "paths": [item["path"] for item in frames],
+        "count": len(frames),
+    }
 
 
 def probe_duration(clip: str) -> float:

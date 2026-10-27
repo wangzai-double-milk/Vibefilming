@@ -2,16 +2,18 @@
 
 离线测试，不提交 Seedance 任务。
 目标是验证新规则能拦住两类常见错误：
-1. plan 已标链式延展，但调用参数里没有 reference_video_url。
-2. 传了 reference_video_url，但 prompt 只写"承接上段"，没有写"基于参考视频继续往后扩写"。
+1. plan 已标链式延展，但调用参数里没有 reference_video_urls。
+2. 传了视频但没有使用 Seedance 2.5 extend/adaptive，或 prompt 只写"承接上段"。
 """
 import json
+import sys
 from pathlib import Path
 
 from _common import ROOT, banner, fail, info, ok, save_json
+sys.path.insert(0, str(ROOT))
+from film import tools, video_models
 
 
-REQUIRED_CHAIN_PHRASE = "基于参考视频继续往后扩写"
 TAIL_STATE_PHRASES = ("参考视频最后", "参考视频末尾", "最后一帧")
 NO_RESET_TERMS = ("不重置", "人物", "服装", "道具", "光线", "机位", "运动方向")
 
@@ -67,13 +69,11 @@ def validate_chain_gate(plan, segment_id, call_args):
 
     errors = []
     prompt = call_args.get("prompt", "")
-    reference_video_url = call_args.get("reference_video_url")
-
-    if not reference_video_url:
-        errors.append("CHAIN-1: 链式延展段缺少 reference_video_url，不能只靠首尾帧文字。")
-
-    if REQUIRED_CHAIN_PHRASE not in prompt:
-        errors.append(f"CHAIN-1: prompt 缺少'{REQUIRED_CHAIN_PHRASE}'。")
+    try:
+        tools._validate_video_generation_strategy(
+            call_args, video_models.PROFILES["2.5"])
+    except ValueError as exc:
+        errors.append(f"CHAIN-1: {exc}")
 
     if not any(phrase in prompt for phrase in TAIL_STATE_PHRASES):
         errors.append("CHAIN-1: prompt 没写清参考视频最后状态 / 末尾状态。")
@@ -99,7 +99,7 @@ def build_cases():
         "args": {
             "name": "seg07b_bad_missing_reference_video",
             "duration": 10,
-            "ratio": "21:9",
+            "ratio": "adaptive",
             "prompt": (
                 "承接上一段视频，opening frame 与上一段 ending frame 一致。"
                 "侦探继续推门进入暗房，保持悬疑气氛。"
@@ -114,8 +114,9 @@ def build_cases():
         "args": {
             "name": "seg07b_bad_missing_continue_phrase",
             "duration": 10,
-            "ratio": "21:9",
-            "reference_video_url": "https://example.invalid/mock/seg07a.mp4",
+            "ratio": "adaptive",
+            "reference_video_urls": ["https://example.invalid/mock/seg07a.mp4"],
+            "omni_reference_task_type": "extend",
             "prompt": (
                 "承接上一段视频。侦探推开门进入暗房，走廊灯光逐渐熄灭。"
                 "opening frame: 侦探右手握住门把。ending frame: 镜头进入暗房。"
@@ -130,10 +131,12 @@ def build_cases():
         "args": {
             "name": "seg07b_good_chain_extension",
             "duration": 10,
-            "ratio": "21:9",
-            "reference_video_url": "https://example.invalid/mock/seg07a.mp4",
+            "ratio": "adaptive",
+            "reference_video_urls": ["https://example.invalid/mock/seg07a.mp4"],
+            "omni_reference_task_type": "extend",
+            "output_format": "mov",
             "prompt": (
-                "基于参考视频继续往后扩写；参考视频最后一帧中，[侦探] 站在走廊尽头，"
+                "向后延长参考视频；参考视频最后一帧中，[侦探] 站在走廊尽头，"
                 "右手仍握住门把，左肩略低，手电光仍落在门缝上。本段从这个状态无缝继续，"
                 "不重置人物、服装、道具、光线、机位和运动方向。"
                 "35mm、f/2.8 稳定器后跟长镜头继续向前推进，门被缓慢推开，"
@@ -162,10 +165,9 @@ def assert_skill_and_tool_rules_present():
     tools_text = (ROOT / "film/tools.py").read_text(encoding="utf-8")
 
     checks = [
-        ("PE 包含 CHAIN-1", "CHAIN-1" in pe_text),
-        ("PE 要求基于参考视频继续往后扩写", REQUIRED_CHAIN_PHRASE in pe_text),
-        ("工具层支持 reference_video_url", "reference_video_url" in tools_text),
-        ("工具层参数说明包含链式续写口径", REQUIRED_CHAIN_PHRASE in tools_text),
+        ("PE 要求长镜头使用 extend", "`extend`" in pe_text),
+        ("工具层支持 reference_video_urls", "reference_video_urls" in tools_text),
+        ("工具层参数说明包含 extend", "omni_reference_task_type=extend" in tools_text),
     ]
     return [label for label, passed in checks if not passed]
 

@@ -12,16 +12,23 @@ from _common import ROOT, banner, fail, info, ok, save_json
 
 
 REQUIRED_SELF_CHECK_TERMS = (
-    "pe_self_check / model_call_preflight: PASS | BLOCKED",
+    "prompt_ready_for_generation",
+    "plan_fidelity",
+    "seven_layer_detail",
     "time_axis_motion",
     "expression_and_secondary_motion",
+    "generation_settings_match",
     "prompt_specificity",
     "blocking_findings",
+    "required_fix",
 )
 
 REQUIRED_PROMPT_TERMS = (
     "参考绑定表",
-    "只用于理解剧情梗概",
+    "6格动作故事板",
+    "局部路径",
+    "接触",
+    "最终落点",
     "不代表分镜",
     "七层画面描述",
     "段内时间轴",
@@ -58,7 +65,7 @@ def mock_director_plan_segment():
         "duration": 14,
         "camera": "50mm、f/2.8，中近景，轻微手持，焦点从牛肉丸转到鲣鱼眼神。",
         "scene": "潮汕夜市牛肉丸粿条摊前，暖色灯牌、蒸汽、拥挤人流。",
-        "storyboard_role": "九宫格故事板只用于剧情梗概、事件顺序、情绪推进，不代表分镜或人物材质。",
+        "storyboard_role": "6格动作故事板用于本单元事件顺序、局部轨迹、接触、反馈和落点，不代表分镜或人物材质。",
         "time_axis": [
             "0-3秒：鲣鱼从摊位右前方靠近，视线先扫锅再落到碗里。",
             "3-6秒：她夹起牛肉丸，热气扑到脸前，眉毛微抬，鼻翼轻动。",
@@ -69,7 +76,7 @@ def mock_director_plan_segment():
         "references": {
             "A": "鲣鱼角色卡三视图",
             "B": "牛肉丸粿条摊主视角",
-            "C": "seg04 牛肉丸品尝九宫格故事板",
+            "C": "seg04 牛肉丸品尝6格动作故事板",
         },
     }
 
@@ -78,8 +85,9 @@ def good_prompt():
     return (
         "参考绑定表：参考图A = [鲣鱼]角色卡，只锁身份、脸、体型、马尾、浅色衬衫、帆布包和配饰；"
         "参考图B = 牛肉丸粿条摊，只锁摊位空间、锅灶位置、灯牌和蒸汽环境；"
-        "参考图C = 九宫格故事板，只用于理解剧情梗概、事件顺序、情绪 / 信息推进，"
-        "不代表分镜、不决定切几刀、不锁人物细节、材质、场景结构或镜头视角，箭头和格号不进成片。\n"
+        "参考图C = 6格动作故事板，用于理解本单元事件顺序、手和筷子的局部路径、牛肉丸入口接触、"
+        "热气反馈和最终落点；不代表分镜、不决定切几刀、不锁人物细节、材质或场景结构，"
+        "面板、箭头、接触标记、时间标签不进成片。\n"
         "七层画面描述：1. 镜头层：50mm、f/2.8，中近景，轻微手持，浅景深，焦点从筷子夹起的牛肉丸转到[鲣鱼]眼神。"
         "2. 主体层：[鲣鱼]站在摊位前，右肩略向前，右手托碗，左手用筷子夹牛肉丸；皮肤有真实毛孔，"
         "马尾扎起，浅色衬衫袖口有细褶。3. 地理位置层：潮汕夜市牛肉丸粿条摊前。"
@@ -119,7 +127,7 @@ def good_self_check(prompt):
         "checked_against": {
             "director_plan": "mock_director_plan.seg04_beef_ball_bite_time_axis",
             "script": "mock script dialogue",
-            "references": "3 张：角色卡、场景、九宫格故事板，职责均已写入 prompt",
+            "references": "3 张：角色卡、场景、6格动作故事板，职责均已写入 prompt",
             "generation_settings": "duration=14, ratio=16:9, resolution=720p, generate_audio=true",
         },
         "items": {
@@ -149,7 +157,7 @@ def blocked_self_check(prompt):
         "checked_against": {
             "director_plan": "mock_director_plan.seg04_beef_ball_bite_time_axis",
             "script": "mock script dialogue",
-            "references": "3 张：角色卡、场景、九宫格故事板",
+            "references": "3 张：角色卡、场景、6格动作故事板",
             "generation_settings": "duration=14, ratio=16:9, resolution=720p, generate_audio=true",
         },
         "items": {

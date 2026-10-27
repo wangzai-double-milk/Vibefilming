@@ -1,12 +1,29 @@
 {
+  "workflow": {
+    "default_execution_mode": "human_gated"
+  },
+  "server": {
+    "studio": {
+      "host": "127.0.0.1",
+      "port": 8764,
+      "public_url": ""
+    },
+    "canvas": {
+      "host": "127.0.0.1",
+      "port": 8765,
+      "public_url": ""
+    }
+  },
   "ark": {
     "api_key": "ark-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
     "api_base": "https://ark.cn-beijing.volces.com/api/v3",
     "models": {
-      "text": "deepseek-v4-pro-260425",
-      "vlm": "doubao-seed-2-1-pro-260628",
+      "text": "doubao-seed-evolving",
+      "vlm": "doubao-seed-evolving",
       "image": "doubao-seedream-5-0-260128",
-      "video": "doubao-seedance-2-0-260128"
+      "video": "doubao-seedance-2-0-260128",
+      "video_2_0": "doubao-seedance-2-0-260128",
+      "video_2_5": "doubao-seedance-2-5-260628"
     }
   },
   "volc": {

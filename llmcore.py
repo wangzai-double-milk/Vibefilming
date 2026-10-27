@@ -495,6 +495,7 @@ def _log_llm_api_call(sess, url, payload, *, status_code=None, response_body=Non
                 "body": payload,
             },
             raw_response=response_body,
+            duration_s=(time.time() - started_at) if started_at else None,
         )
     except Exception:
         pass
